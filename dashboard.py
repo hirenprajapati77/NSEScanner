@@ -224,6 +224,40 @@ HTML = """<!DOCTYPE html>
     .toast.show { opacity: 1; transform: translateY(0); }
     
     .outer { position: relative; min-height: 400px; }
+    
+    /* Premium Mobile Responsiveness Media Queries */
+    @media (max-width: 768px) {
+      body { padding: 8px; font-size: 12px; }
+      .scanner-wrap { border-radius: 8px; }
+      .top-bar { padding: 10px 14px; }
+      .brand { font-size: 14px; }
+      .live-badge { font-size: 10px; padding: 2px 8px; }
+      
+      .tabs { flex-wrap: nowrap; overflow-x: auto; padding: 0 8px; -webkit-overflow-scrolling: touch; }
+      .tabs::-webkit-scrollbar { display: none; }
+      .tabs { -ms-overflow-style: none; scrollbar-width: none; }
+      .tab { padding: 10px 12px; font-size: 11px; gap: 4px; }
+      
+      .controls { padding: 10px 14px; gap: 8px; }
+      .controls label { font-size: 11px; }
+      .controls select { font-size: 11px; padding: 4px 6px; }
+      .ema-chip { padding: 3px 8px; font-size: 10px; }
+      
+      #scanBtn { width: 100% !important; margin-top: 4px; order: 4; }
+      #tickerSearch { width: 100% !important; margin-left: 0 !important; margin-top: 4px; order: 5; }
+      
+      .summary-bar { padding: 10px 14px; gap: 10px 15px; }
+      .sum-item { font-size: 11px; }
+      
+      .tbl-wrap { border-radius: 0; }
+      th, td { padding: 8px 10px; font-size: 11px; }
+      
+      .action-bar { padding: 10px 14px; flex-direction: column; align-items: stretch; gap: 8px; }
+      .action-bar button { width: 100%; justify-content: center; }
+      .action-bar span#lastScanTime { margin-left: 0 !important; text-align: center; margin-top: 4px; }
+      
+      .modal { width: 95% !important; padding: 16px; }
+    }
   </style>
 </head>
 <body>
