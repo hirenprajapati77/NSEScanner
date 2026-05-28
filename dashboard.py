@@ -190,7 +190,7 @@ HTML = """<!DOCTYPE html>
     .alert-row span { font-size: 11px; color: #34d399; font-weight: 500; }
     
     .vol-bar { height: 5px; background: #1f2937; border-radius: 2px; width: 60px; overflow: hidden; display: inline-block; vertical-align: middle; }
-    .vol-fill { height: 100%; background: #3b82f6; border-radius: 2px; }
+    .vol-fill { height: 100%; background: #4ade80; border-radius: 2px; }
     .vol-fill.high { background: #fbbf24; }
     .vol-fill.spike { background: #f87171; }
     
@@ -342,7 +342,7 @@ HTML = """<!DOCTYPE html>
           <th onclick="handleSort('price')">PRICE <span class="sort-icon" id="sort-price"><i class="ti ti-selector"></i></span></th>
           <th onclick="handleSort('pct_above')">% ABOVE <span class="sort-icon" id="sort-pct_above"><i class="ti ti-selector"></i></span></th>
           <th onclick="handleSort('upside')">UPSIDE <span class="sort-icon" id="sort-upside"><i class="ti ti-selector"></i></span></th>
-          <th onclick="handleSort('stop_loss')">STOP LOSS <span class="sort-icon" id="sort-stop_loss"><i class="ti ti-selector"></i></span></th>
+          <th onclick="handleSort('rr')">R:R RATIO <span class="sort-icon" id="sort-rr"><i class="ti ti-selector"></i></span></th>
           <th>CAM LEVELS</th>
           <th>EMA ✓</th>
           <th onclick="handleSort('vol_ratio')">VOL <span class="sort-icon" id="sort-vol_ratio"><i class="ti ti-selector"></i></span></th>
@@ -480,6 +480,16 @@ function triggerFilterChange() {
   render();
 }
 
+function preprocessSignals(signals) {
+  if (!signals) return [];
+  return signals.map(s => {
+    const risk = s.entry - s.stop_loss;
+    const reward = s.target - s.entry;
+    s.rr = risk > 0 ? parseFloat((reward / risk).toFixed(2)) : 0;
+    return s;
+  });
+}
+
 function updateTabCounts() {
   const searchVal = document.getElementById('tickerSearch').value.toLowerCase().trim();
   const volMult = parseFloat(document.getElementById('volMult').value);
@@ -492,7 +502,7 @@ function updateTabCounts() {
   });
   
   const counts = {
-    bullish: baseData.length,
+    bullish: baseData.filter(s => s.candle === 'Bull').length,
     bearish: baseData.filter(s => s.candle === 'Bear').length,
     hv: baseData.filter(s => s.days <= 10).length,
     entry: baseData.filter(s => Math.abs(s.price - s.entry) / s.entry <= 0.02).length,
@@ -521,7 +531,9 @@ function render() {
   });
   
   // 2. Filter based on active tab
-  if (activeTab === 'bearish') {
+  if (activeTab === 'bullish') {
+    filtered = filtered.filter(s => s.candle === 'Bull');
+  } else if (activeTab === 'bearish') {
     filtered = filtered.filter(s => s.candle === 'Bear');
   } else if (activeTab === 'hv') {
     filtered = filtered.filter(s => s.days <= 10);
@@ -580,22 +592,75 @@ function render() {
       { pass: s.ema200_pass && emaReq['200'], label: '200' }
     ].map(ema => `<div class="edot ${ema.pass ? 'pass' : ''}" title="EMA${ema.label}${ema.pass ? ' ✓' : ' ✗'}"></div>`).join('');
     
-    const daysColor = s.days <= 10 ? 'class="days-warn"' : '';
+    // 52W High/Low Range Slider calculations
+    const rangePct = Math.min(100, Math.max(0, ((s.price - s.hv_low) / (s.hv_high - s.hv_low)) * 100));
+    
+    // DAYS color-coding class: green 0-10d, yellow 11-30d, red >30d
+    let daysColorClass = 'dn';
+    if (s.days <= 10) daysColorClass = 'up';
+    else if (s.days <= 30) daysColorClass = 'days-warn';
+    
+    // % ABOVE color-coding class: green <10%, yellow 10-25%, red >25%
+    let pctColorClass = 'dn';
+    if (s.pct_above < 10) pctColorClass = 'up';
+    else if (s.pct_above <= 25) pctColorClass = 'days-warn';
+    
     const isFav = watchlist.includes(s.symbol);
     const starColor = isFav ? '#fbbf24' : '#4b5563';
     
+    // Score breakdown tooltip calculation
+    let base = 50;
+    let emaBonus = 0;
+    if (s.ema10_pass) emaBonus += 5;
+    if (s.ema20_pass) emaBonus += 5;
+    if (s.ema50_pass) emaBonus += 5;
+    if (s.ema200_pass) emaBonus += 5;
+    
+    let volBonus = 0;
+    if (s.vol_ratio >= 3) volBonus = 15;
+    else if (s.vol_ratio >= 2) volBonus = 10;
+    else if (s.vol_ratio >= 1.5) volBonus = 5;
+    
+    let candleBonus = s.candle === 'Bull' ? 5 : 0;
+    
+    let lowPenalty = 0;
+    if (s.pct_above < 5) lowPenalty = 5;
+    else if (s.pct_above > 50) lowPenalty = -40;
+    else if (s.pct_above > 30) lowPenalty = -30;
+    else if (s.pct_above > 25) lowPenalty = -20;
+    else if (s.pct_above > 15) lowPenalty = -10;
+    else if (s.pct_above < 10 && s.pct_above >= 5) lowPenalty = 2;
+    
+    let tooltip = `Base Score: 50\n`;
+    if (emaBonus > 0) tooltip += `+${emaBonus} for EMAs passed\n`;
+    if (volBonus > 0) tooltip += `+${volBonus} for Volume spike (${s.vol_ratio.toFixed(1)}x)\n`;
+    if (candleBonus > 0) tooltip += `+${candleBonus} for Bullish candle\n`;
+    if (lowPenalty > 0) tooltip += `+${lowPenalty} for low % above 52W low\n`;
+    if (lowPenalty < 0) tooltip += `${lowPenalty} Penalty: Chasing (${s.pct_above.toFixed(1)}% above 52W low)`;
+    tooltip = tooltip.trim();
+    
     return `
       <tr>
-        <td><span class="sym">${s.symbol}</span><br><span class="buy-badge">BUY</span></td>
-        <td><span class="score">${s.score}<span class="denom">/100</span></span></td>
+        <td>
+          <span class="sym">${s.symbol}</span><br>
+          <span class="buy-badge">BUY</span>
+          <div style="font-size:9px;color:#6b7280;margin-top:5px;display:flex;align-items:center;gap:4px;" title="Price position between 52W Low (${fmt(s.hv_low)}) and 52W High (${fmt(s.hv_high)}) is at ${rangePct.toFixed(1)}%">
+            <span>52W L</span>
+            <div style="width:55px;height:3px;background:#374151;border-radius:1.5px;position:relative;">
+              <div style="position:absolute;left:${rangePct}%;top:-1.5px;width:6px;height:6px;border-radius:50%;background:#3b82f6;box-shadow:0 0 3px #3b82f6;"></div>
+            </div>
+            <span>52W H</span>
+          </div>
+        </td>
+        <td><span class="score" style="cursor:help;" title="${tooltip}">${s.score}<span class="denom">/100</span></span></td>
         <td style="color:#9ca3af">${s.hv_date}</td>
-        <td ${daysColor}>${s.days}d</td>
+        <td class="${daysColorClass}">${s.days}d</td>
         <td>${fmt(s.hv_low)}</td>
         <td>${fmt(s.hv_high)}</td>
         <td><div class="price-main">${fmt(s.price)}</div><div class="price-date">● ${s.scanned_date || 'Today'}</div></td>
-        <td class="up">${pct(s.pct_above)}</td>
+        <td class="${pctColorClass}">${pct(s.pct_above)}</td>
         <td class="${s.upside < 0 ? 'dn' : 'up'}">${pct(s.upside)}</td>
-        <td class="sl">${fmt(s.stop_loss)}</td>
+        <td class="neutral">1 : ${s.rr ? s.rr.toFixed(1) : '0.0'}</td>
         <td class="cam-levels">
           <div class="cam-h3">H3 ${fmt(s.target)}</div>
           <div class="cam-pivot">P ${fmt(s.entry)}</div>
@@ -649,7 +714,7 @@ function checkScanStatus() {
         }
         
         if (data.signals) {
-          stocks = data.signals;
+          stocks = preprocessSignals(data.signals);
           document.getElementById('lastScanTime').textContent = data.last_scan ? 'Last scan: ' + data.last_scan : 'Never Scanned';
           updateTabCounts();
           render();
@@ -828,7 +893,7 @@ fetch('/results')
     if (data.scanning) {
       pollInterval = setInterval(checkScanStatus, 1500);
     } else if (data.signals) {
-      stocks = data.signals;
+      stocks = preprocessSignals(data.signals);
       document.getElementById('lastScanTime').textContent = data.last_scan ? 'Last scan: ' + data.last_scan : 'Never Scanned';
       updateTabCounts();
       render();

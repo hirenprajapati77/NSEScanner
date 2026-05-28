@@ -135,11 +135,19 @@ def compute_score(row: dict) -> int:
     if row.get("candle") == "Bull":
         score += 5
 
-    # Distance from HV Low (lower = better entry)
+    # Distance from HV Low (lower = better entry, penalize chasing steeply)
     pct_above = row.get("pct_above", 100)
     if pct_above < 5:
         score += 5
-    elif pct_above > 20:
+    elif pct_above < 10:
+        score += 2
+    elif pct_above > 50:
+        score -= 40
+    elif pct_above > 30:
+        score -= 30
+    elif pct_above > 25:
+        score -= 20
+    elif pct_above > 15:
         score -= 10
 
     return min(100, max(0, score))
@@ -213,7 +221,7 @@ def analyse(ticker: str) -> dict | None:
         hv_low  = float(last_252["low"].min())
         hv_high_idx = last_252["high"].idxmax()
         hv_date = hv_high_idx.strftime("%d-%b-%Y")
-        days_since_high = int((df.index[-1] - hv_high_idx).days)
+        days_since_high = int((datetime.now().date() - hv_high_idx.date()).days)
 
         cam = camarilla_levels(hv_high, hv_low, close)
 
@@ -405,6 +413,8 @@ def save_csv(signals: list[dict]):
             "EMA200":    r["ema200"],
             "HV_High":   r["hv_high"],
             "HV_Low":    r["hv_low"],
+            "HV_Date":   r["hv_date"],
+            "Days":      r["days"],
             "Scanned_At": datetime.now().strftime("%Y-%m-%d %H:%M"),
         })
     fname = f"scan_{datetime.now().strftime('%Y%m%d_%H%M')}.csv"
