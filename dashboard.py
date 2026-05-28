@@ -346,6 +346,14 @@ HTML = """<!DOCTYPE html>
       <i class="ti ti-scan-eye"></i> Run Live Scan
     </button>
 
+    <label style="margin-left:8px;"><i class="ti ti-refresh" aria-hidden="true"></i> Auto-Scan:</label>
+    <select id="autoScanSelect" onchange="toggleAutoScan()">
+      <option value="off" selected>Off</option>
+      <option value="180000">3 Mins</option>
+      <option value="300000">5 Mins</option>
+      <option value="600000">10 Mins</option>
+    </select>
+
     <!-- Search Box -->
     <input type="text" id="tickerSearch" placeholder="🔍 Search ticker..." oninput="render()" style="background:#1f2937;border:0.5px solid #374151;color:#e5e7eb;padding:5px 10px;border-radius:6px;font-size:12px;width:150px;margin-left:auto;outline:none;">
   </div>
@@ -522,6 +530,27 @@ function preprocessSignals(signals) {
     s.rr = risk > 0 ? parseFloat((reward / risk).toFixed(2)) : 0;
     return s;
   });
+}
+
+let autoScanTimer = null;
+function toggleAutoScan() {
+  const val = document.getElementById('autoScanSelect').value;
+  if (autoScanTimer) {
+    clearInterval(autoScanTimer);
+    autoScanTimer = null;
+  }
+  if (val !== 'off') {
+    const ms = parseInt(val);
+    showToast(`Auto-Scan activated: every ${ms / 60000} mins.`);
+    autoScanTimer = setInterval(() => {
+      const btn = document.getElementById('scanBtn');
+      if (!btn.disabled && !pollInterval) {
+        startScan();
+      }
+    }, ms);
+  } else {
+    showToast("Auto-Scan deactivated.");
+  }
 }
 
 function updateTabCounts() {
