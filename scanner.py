@@ -152,7 +152,16 @@ def analyse(ticker: str) -> dict | None:
     try:
         vol_days = CFG["VOL_DAYS"]
         min_required_len = max(210, vol_days + 10)
-        df = yf.download(ticker, period="5y", interval="1d", progress=False, auto_adjust=True)
+        
+        # Configure a browser-spoofed requests session to prevent yfinance cloud blocks on Render
+        session = requests.Session()
+        session.headers.update({
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9"
+        })
+        
+        df = yf.download(ticker, period="5y", interval="1d", progress=False, auto_adjust=True, session=session)
         if df is None or df.empty or len(df) < min_required_len:
             return None
 

@@ -13,17 +13,38 @@ from scanner import run_scan, CFG, NIFTY500_SAMPLE
 
 app = Flask(__name__)
 
-# Core Cache
-_cache = {
-    "signals": [],
-    "last_scan": "Never",
-    "scanning": False,
-    "progress": {"current": 0, "total": 0, "ticker": "Idle"}
-}
+STATUS_FILE = "scan_status.json"
 
-# ── LOAD PREVIOUS SIGNAL CACHE ON START ──────────────────────
-# Attempt to find the latest scan CSV and load it into cache
-def load_latest_cache():
+# ── DOCKER/GUNICORN MULTI-PROCESS PERSISTENT STATE ────────────
+# Reads the state from a local JSON file to synchronize progress 
+# between multiple Gunicorn worker processes.
+def read_status():
+    if os.path.exists(STATUS_FILE):
+        try:
+            with open(STATUS_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {
+        "signals": [],
+        "last_scan": "Never",
+        "scanning": False,
+        "progress": {"current": 0, "total": 0, "ticker": "Idle"}
+    }
+
+def write_status(status_data):
+    try:
+        with open(STATUS_FILE, "w", encoding="utf-8") as f:
+            json.dump(status_data, f, indent=2)
+    except Exception as e:
+        print(f"Error writing status file: {e}")
+
+# Attempt to load the latest scan CSV and import it into state if empty
+def load_latest_cache_if_empty():
+    status_data = read_status()
+    if status_data.get("signals"):
+        return
+        
     try:
         csv_files = [f for f in os.listdir(".") if f.startswith("scan_") and f.endswith(".csv")]
         if csv_files:
@@ -32,7 +53,6 @@ def load_latest_cache():
             df = pd.read_csv(latest_csv)
             signals = []
             for _, r in df.iterrows():
-                # Extract EMA pass values safely
                 signals.append({
                     "symbol":      str(r["Symbol"]),
                     "score":       int(r["Score"]),
@@ -57,16 +77,15 @@ def load_latest_cache():
                     "ema200_pass": bool(float(r["Price"]) > float(r["EMA200"])),
                     "scanned_date": str(r.get("Scanned_At", datetime.now().strftime("%d-%b-%Y")))
                 })
-            _cache["signals"] = signals
-            # Format time from filename
-            # scan_YYYYMMDD_HHMM.csv
+            status_data["signals"] = signals
             t_str = latest_csv.replace("scan_", "").replace(".csv", "")
             dt = datetime.strptime(t_str, "%Y%m%d_%H%M")
-            _cache["last_scan"] = dt.strftime("%d %b %Y %H:%M")
+            status_data["last_scan"] = dt.strftime("%d %b %Y %H:%M")
+            write_status(status_data)
     except Exception as e:
         print(f"No existing CSV cache loaded: {e}")
 
-load_latest_cache()
+load_latest_cache_if_empty()
 
 HTML = """<!DOCTYPE html>
 <html lang="en">
@@ -155,7 +174,7 @@ HTML = """<!DOCTYPE html>
     
     .modal-bg { display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.85); z-index: 100; align-items: center; justify-content: center; padding: 20px; backdrop-filter: blur(4px); }
     .modal-bg.show { display: flex; }
-    .modal { background: #1f2937; border-radius: 10px; padding: 24px; width: 400px; max-width: 100%; border: 1px solid #374151; box-shadow: 0 25px 50px -12px rgba(0,0,0,0.5); position: relative; animation: modalEnter 0.2s ease-out; }
+    .modal { background: #1f2937; border-radius: 10px; padding: 24px; width: 420px; max-width: 100%; border: 1px solid #374151; box-shadow: 0 25px 50px -12px rgba(0,0,0,0.5); position: relative; animation: modalEnter 0.2s ease-out; }
     @keyframes modalEnter { from { transform: scale(0.95); opacity: 0; } to { transform: scale(1); opacity: 1; } }
     .modal h3 { color: #f9fafb; font-size: 16px; margin-bottom: 12px; display: flex; align-items: center; gap: 8px; }
     .modal label { color: #9ca3af; font-size: 12px; display: block; margin-bottom: 4px; margin-top: 12px; font-weight: 500; }
@@ -345,20 +364,28 @@ HTML = """<!DOCTYPE html>
 
   <!-- Beautiful Configuration Modal -->
   <div class="modal-bg" id="modalBg">
-    <div class="modal">
-      <h3 id="modalTitle">Configure Telegram Alerts</h3>
+    <div class="modal" style="width: 420px;">
+      <h3 id="modalTitle">Configure Alerts</h3>
       
-      <div id="modalFields">
-        <label id="field1Label">Bot Token</label>
-        <input type="text" id="field1" placeholder="e.g. 7123456789:AAF..." />
+      <!-- Telegram Fields -->
+      <div id="tgFields" style="display: none;">
+        <label>Telegram Bot Token</label>
+        <input type="text" id="tgToken" placeholder="e.g. 7123456789:AAF..." />
         
-        <label id="field2Label">Chat ID / Group ID</label>
-        <input type="text" id="field2" placeholder="e.g. -1001234567890" />
+        <label>Chat ID or Group ID</label>
+        <input type="text" id="tgChatId" placeholder="e.g. -1001234567890" />
+      </div>
 
-        <div id="field3Container" style="display:none;">
-          <label id="field3Label">Twilio Auth Token</label>
-          <input type="password" id="field3" placeholder="your Twilio auth token" />
-        </div>
+      <!-- WhatsApp Fields -->
+      <div id="waFields" style="display: none;">
+        <label>Twilio Account SID</label>
+        <input type="text" id="waSid" placeholder="e.g. ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" />
+        
+        <label>Twilio Auth Token</label>
+        <input type="password" id="waToken" placeholder="your Twilio Auth Token" />
+        
+        <label>WhatsApp Number (To)</label>
+        <input type="text" id="waTo" placeholder="e.g. +919876543210" />
       </div>
 
       <div id="savedAlerts" style="margin-top:12px;"></div>
@@ -450,7 +477,6 @@ function handleSort(column) {
 }
 
 function triggerFilterChange() {
-  // Let the user scan or filter client-side!
   render();
 }
 
@@ -538,7 +564,7 @@ function render() {
   
   // 5. Generate Table Body HTML
   if (filtered.length === 0) {
-    tbody.innerHTML = `<tr><td colspan="15" class="empty-state"><i class="ti ti-database-x"></i>No signals match current filter settings. Try adjusting filters or starting a scan!</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="15" class="empty-state"><i class="ti ti-chart-candlestick" style="font-size:32px;color:#374151;display:block;margin-bottom:8px;"></i>No signals loaded. Click "Run Live Scan" to analyze Nifty 500 stocks!</td></tr>`;
     return;
   }
   
@@ -598,7 +624,6 @@ function checkScanStatus() {
       const pWrap = document.getElementById('progressContainer');
       
       if (data.scanning) {
-        // Show scanning state
         btn.classList.add('scanning');
         btn.disabled = true;
         btn.innerHTML = '<span class="ti ti-loader-quarter" style="animation:spin 1s linear infinite;display:inline-block;"></span> Scanning...';
@@ -612,7 +637,6 @@ function checkScanStatus() {
         document.getElementById('progressStatus').textContent = `Scanning: [${curr}/${tot}] downloading data for ${data.progress.ticker}`;
         document.getElementById('progressPercent').textContent = pctVal + '%';
       } else {
-        // Turn off scan state
         btn.classList.remove('scanning');
         btn.disabled = false;
         btn.innerHTML = '<i class="ti ti-scan-eye"></i> Run Live Scan';
@@ -649,7 +673,14 @@ function startScan() {
     ema10:  document.getElementById('c10').classList.contains('on'),
     ema20:  document.getElementById('c20').classList.contains('on'),
     ema50:  document.getElementById('c50').classList.contains('on'),
-    ema200: document.getElementById('c200').classList.contains('on')
+    ema200: document.getElementById('c200').classList.contains('on'),
+    
+    // Pass alert credentials dynamically from localStorage
+    tg_token: localStorage.getItem('cfg_tg_token') || '',
+    tg_chat_id: localStorage.getItem('cfg_tg_chat_id') || '',
+    twilio_sid: localStorage.getItem('cfg_wa_sid') || '',
+    twilio_token: localStorage.getItem('cfg_wa_token') || '',
+    twilio_to: localStorage.getItem('cfg_wa_to') || ''
   };
   
   fetch('/scan', {
@@ -663,17 +694,29 @@ function startScan() {
       showToast("Error: " + data.error);
     } else {
       showToast("Live scanning initialized in background!");
-      pollInterval = setInterval(checkScanStatus, 1000);
+      pollInterval = setInterval(checkScanStatus, 1500);
     }
   })
   .catch(() => showToast("Failed to initialize scan."));
 }
 
 function sendDirectAlerts() {
-  fetch('/alert', { method: 'POST' })
-    .then(r => r.json())
-    .then(data => showToast(data.message))
-    .catch(() => showToast("Failed to send alerts."));
+  const params = {
+    tg_token: localStorage.getItem('cfg_tg_token') || '',
+    tg_chat_id: localStorage.getItem('cfg_tg_chat_id') || '',
+    twilio_sid: localStorage.getItem('cfg_wa_sid') || '',
+    twilio_token: localStorage.getItem('cfg_wa_token') || '',
+    twilio_to: localStorage.getItem('cfg_wa_to') || ''
+  };
+  
+  fetch('/alert', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(params)
+  })
+  .then(r => r.json())
+  .then(data => showToast(data.message))
+  .catch(() => showToast("Failed to send alerts."));
 }
 
 // ── ALERTS MODAL CONFIGURATION ──────────────────────────────
@@ -682,39 +725,53 @@ let modalType = '';
 function showModal(type) {
   modalType = type;
   document.getElementById('modalBg').classList.add('show');
-  document.getElementById('modalTitle').innerHTML = type === 'tg' ? 
-    '<i class="ti ti-brand-telegram" style="color:#0369a1;"></i> Configure Telegram Alerts' : 
-    '<i class="ti ti-brand-whatsapp" style="color:#14532d;"></i> Configure WhatsApp (Twilio) Alerts';
   
-  const f3Cont = document.getElementById('field3Container');
+  const tgF = document.getElementById('tgFields');
+  const waF = document.getElementById('waFields');
   
   if (type === 'tg') {
-    document.getElementById('field1Label').textContent = 'Telegram Bot Token';
-    document.getElementById('field1').placeholder = 'e.g. 7123456789:AAF...';
-    document.getElementById('field2Label').textContent = 'Chat ID or Channel ID';
-    document.getElementById('field2').placeholder = 'e.g. -1001234567890';
-    f3Cont.style.display = 'none';
+    document.getElementById('modalTitle').innerHTML = '<i class="ti ti-brand-telegram" style="color:#0369a1;"></i> Configure Telegram Alerts';
+    tgF.style.display = 'block';
+    waF.style.display = 'none';
+    
+    // Load from localStorage or fall back to backend config
+    const savedToken = localStorage.getItem('cfg_tg_token');
+    const savedChatId = localStorage.getItem('cfg_tg_chat_id');
+    
+    if (savedToken) document.getElementById('tgToken').value = savedToken;
+    if (savedChatId) document.getElementById('tgChatId').value = savedChatId;
+    
+    if (!savedToken || !savedChatId) {
+      fetch('/get_config')
+        .then(r => r.json())
+        .then(cfg => {
+          if (!document.getElementById('tgToken').value) document.getElementById('tgToken').value = cfg.tg_token || '';
+          if (!document.getElementById('tgChatId').value) document.getElementById('tgChatId').value = cfg.tg_chat_id || '';
+        });
+    }
   } else {
-    document.getElementById('field1Label').textContent = 'Twilio Account SID';
-    document.getElementById('field1').placeholder = 'e.g. ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx';
-    document.getElementById('field2Label').textContent = 'WhatsApp Number (To)';
-    document.getElementById('field2').placeholder = 'e.g. +919876543210';
-    f3Cont.style.display = 'block';
+    document.getElementById('modalTitle').innerHTML = '<i class="ti ti-brand-whatsapp" style="color:#14532d;"></i> Configure WhatsApp (Twilio) Alerts';
+    tgF.style.display = 'none';
+    waF.style.display = 'block';
+    
+    const savedSid = localStorage.getItem('cfg_wa_sid');
+    const savedToken = localStorage.getItem('cfg_wa_token');
+    const savedTo = localStorage.getItem('cfg_wa_to');
+    
+    if (savedSid) document.getElementById('waSid').value = savedSid;
+    if (savedToken) document.getElementById('waToken').value = savedToken;
+    if (savedTo) document.getElementById('waTo').value = savedTo;
+    
+    if (!savedSid || !savedToken || !savedTo) {
+      fetch('/get_config')
+        .then(r => r.json())
+        .then(cfg => {
+          if (!document.getElementById('waSid').value) document.getElementById('waSid').value = cfg.twilio_sid || '';
+          if (!document.getElementById('waToken').value) document.getElementById('waToken').value = cfg.twilio_token || '';
+          if (!document.getElementById('waTo').value) document.getElementById('waTo').value = cfg.twilio_to || '';
+        });
+    }
   }
-  
-  // Pre-fill existing config from backend
-  fetch('/get_config')
-    .then(r => r.json())
-    .then(cfg => {
-      if (type === 'tg') {
-        document.getElementById('field1').value = cfg.tg_token || '';
-        document.getElementById('field2').value = cfg.tg_chat_id || '';
-      } else {
-        document.getElementById('field1').value = cfg.twilio_sid || '';
-        document.getElementById('field2').value = cfg.twilio_to || '';
-        document.getElementById('field3').value = cfg.twilio_token || '';
-      }
-    });
 }
 
 function closeModal() {
@@ -722,21 +779,34 @@ function closeModal() {
 }
 
 function saveAlert() {
-  const f1 = document.getElementById('field1').value.trim();
-  const f2 = document.getElementById('field2').value.trim();
-  const f3 = document.getElementById('field3').value.trim();
+  let params = { type: modalType };
   
-  if (!f1 || !f2 || (modalType === 'wa' && !f3)) {
-    showToast('Please fill in all configuration fields.');
-    return;
+  if (modalType === 'tg') {
+    const token = document.getElementById('tgToken').value.trim();
+    const chatId = document.getElementById('tgChatId').value.trim();
+    if (!token || !chatId) {
+      showToast('Please fill in all Telegram fields.');
+      return;
+    }
+    localStorage.setItem('cfg_tg_token', token);
+    localStorage.setItem('cfg_tg_chat_id', chatId);
+    params.f1 = token;
+    params.f2 = chatId;
+  } else {
+    const sid = document.getElementById('waSid').value.trim();
+    const token = document.getElementById('waToken').value.trim();
+    const to = document.getElementById('waTo').value.trim();
+    if (!sid || !token || !to) {
+      showToast('Please fill in all Twilio WhatsApp fields.');
+      return;
+    }
+    localStorage.setItem('cfg_wa_sid', sid);
+    localStorage.setItem('cfg_wa_token', token);
+    localStorage.setItem('cfg_wa_to', to);
+    params.f1 = sid;
+    params.f2 = to;
+    params.f3 = token;
   }
-  
-  const params = {
-    type: modalType,
-    f1: f1,
-    f2: f2,
-    f3: f3
-  };
   
   fetch('/save_config', {
     method: 'POST',
@@ -752,12 +822,11 @@ function saveAlert() {
 }
 
 // ── INITIALIZATION ──────────────────────────────────────────
-// Pull cached results immediately on page open
 fetch('/results')
   .then(r => r.json())
   .then(data => {
     if (data.scanning) {
-      pollInterval = setInterval(checkScanStatus, 1000);
+      pollInterval = setInterval(checkScanStatus, 1500);
     } else if (data.signals) {
       stocks = data.signals;
       document.getElementById('lastScanTime').textContent = data.last_scan ? 'Last scan: ' + data.last_scan : 'Never Scanned';
@@ -788,19 +857,21 @@ def index():
 
 @app.route("/results")
 def results():
+    status_data = read_status()
     return jsonify({
-        "signals": _cache["signals"],
-        "last_scan": _cache["last_scan"],
-        "scanning": _cache["scanning"]
+        "signals": status_data["signals"],
+        "last_scan": status_data["last_scan"],
+        "scanning": status_data["scanning"]
     })
 
 @app.route("/status")
 def status():
+    status_data = read_status()
     return jsonify({
-        "scanning": _cache["scanning"],
-        "progress": _cache["progress"],
-        "last_scan": _cache["last_scan"],
-        "signals": _cache["signals"] if not _cache["scanning"] else []
+        "scanning": status_data["scanning"],
+        "progress": status_data["progress"],
+        "last_scan": status_data["last_scan"],
+        "signals": status_data["signals"] if not status_data["scanning"] else []
     })
 
 @app.route("/get_config")
@@ -857,7 +928,8 @@ def save_config():
 
 @app.route("/scan", methods=["POST"])
 def scan():
-    if _cache["scanning"]:
+    status_data = read_status()
+    if status_data.get("scanning", False):
         return jsonify({"error": "Scan already running"}), 429
         
     body = request.get_json() or {}
@@ -868,52 +940,94 @@ def scan():
     CFG["EMA_50"]   = str(body.get("ema50",  True)).lower() != "false"
     CFG["EMA_200"]  = str(body.get("ema200", True)).lower() != "false"
     
-    _cache["scanning"] = True
-    _cache["progress"] = {"current": 0, "total": len(NIFTY500_SAMPLE), "ticker": "Initializing..."}
+    # Capture dynamic credentials from localStorage payload
+    tg_token = body.get("tg_token", "")
+    tg_chat_id = body.get("tg_chat_id", "")
+    twilio_sid = body.get("twilio_sid", "")
+    twilio_token = body.get("twilio_token", "")
+    twilio_to = body.get("twilio_to", "")
+    
+    if tg_token: CFG["TG_TOKEN"] = tg_token
+    if tg_chat_id: CFG["TG_CHAT_ID"] = tg_chat_id
+    if twilio_sid: CFG["TWILIO_SID"] = twilio_sid
+    if twilio_token: CFG["TWILIO_TOKEN"] = twilio_token
+    if twilio_to:
+        wa_to = f"whatsapp:{twilio_to}" if not twilio_to.startswith("whatsapp:") else twilio_to
+        CFG["TWILIO_TO"] = wa_to
+        
+    # Write starting scan status
+    status_data["scanning"] = True
+    status_data["progress"] = {"current": 0, "total": len(NIFTY500_SAMPLE), "ticker": "Initializing..."}
+    write_status(status_data)
     
     def progress_callback(current, total, ticker):
-        _cache["progress"] = {"current": current, "total": total, "ticker": ticker}
+        s_data = read_status()
+        s_data["progress"] = {"current": current, "total": total, "ticker": ticker}
+        write_status(s_data)
         
     def bg_scan():
         try:
             signals = run_scan(NIFTY500_SAMPLE, progress_cb=progress_callback)
-            _cache["signals"] = signals
-            _cache["last_scan"] = datetime.now().strftime("%d %b %Y %H:%M")
             
             # Save automatically to CSV
             from scanner import save_csv, send_telegram, send_whatsapp
             try:
                 save_csv(signals)
             except Exception as e:
-                print(f"Error saving scan CSV: {e}")
+                print(f"Error saving CSV: {e}")
                 
             # Dispatches alerts automatically
             if signals:
                 try:
                     send_telegram(signals)
                 except Exception as e:
-                    print(f"Error dispatching TG alert: {e}")
+                    print(f"Error sending TG alert: {e}")
                 try:
                     send_whatsapp(signals)
                 except Exception as e:
-                    print(f"Error dispatching WA alert: {e}")
+                    print(f"Error sending WA alert: {e}")
                     
+            # Complete scan status file update
+            s_data = read_status()
+            s_data["signals"] = signals
+            s_data["last_scan"] = datetime.now().strftime("%d %b %Y %H:%M")
+            s_data["scanning"] = False
+            s_data["progress"] = {"current": len(NIFTY500_SAMPLE), "total": len(NIFTY500_SAMPLE), "ticker": "Completed"}
+            write_status(s_data)
+            
         except Exception as e:
             print(f"Background Scan Error: {e}")
-        finally:
-            _cache["scanning"] = False
+            s_data = read_status()
+            s_data["scanning"] = False
+            write_status(s_data)
             
     threading.Thread(target=bg_scan, daemon=True).start()
     return jsonify({"status": "Scan initialized"})
 
 @app.route("/alert", methods=["POST"])
 def alert():
+    body = request.get_json() or {}
+    
+    tg_token = body.get("tg_token", "")
+    tg_chat_id = body.get("tg_chat_id", "")
+    twilio_sid = body.get("twilio_sid", "")
+    twilio_token = body.get("twilio_token", "")
+    twilio_to = body.get("twilio_to", "")
+    
+    if tg_token: CFG["TG_TOKEN"] = tg_token
+    if tg_chat_id: CFG["TG_CHAT_ID"] = tg_chat_id
+    if twilio_sid: CFG["TWILIO_SID"] = twilio_sid
+    if twilio_token: CFG["TWILIO_TOKEN"] = twilio_token
+    if twilio_to:
+        wa_to = f"whatsapp:{twilio_to}" if not twilio_to.startswith("whatsapp:") else twilio_to
+        CFG["TWILIO_TO"] = wa_to
+
     from scanner import send_telegram, send_whatsapp
-    signals = _cache.get("signals", [])
+    status_data = read_status()
+    signals = status_data.get("signals", [])
     if not signals:
         return jsonify({"message": "No active signals in cache to alert on."})
         
-    # Send configured notifications
     send_telegram(signals)
     send_whatsapp(signals)
     return jsonify({"message": f"Manual alerts triggered successfully for {len(signals)} active signal(s)!"})
