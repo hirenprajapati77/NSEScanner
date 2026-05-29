@@ -237,6 +237,7 @@ def _do_scan(params: dict, scan_id: str) -> None:
         "TWILIO_TOKEN":   params.get("twilio_token", _load_config().get("twilio_token","")),
         "TWILIO_TO":      params.get("twilio_to",    _load_config().get("twilio_to",   "")),
         "TURNOVER_LIMIT": float(params.get("turnover_limit", CFG["TURNOVER_LIMIT"])),
+        "USE_CACHE_ONLY": bool(params.get("use_cache", False)),
     }
 
     scan_mode = params.get("scan_mode", "bullish")   # bullish | bearish | both
@@ -362,6 +363,7 @@ def scan_single():
         "EMA_50":         bool(data.get("ema50", True)),
         "EMA_200":        bool(data.get("ema200", True)),
         "TURNOVER_LIMIT": float(data.get("turnover_limit", CFG["TURNOVER_LIMIT"])),
+        "USE_CACHE_ONLY": bool(data.get("use_cache", False)),
     }
 
     # Attempt to scan for Bullish first
@@ -839,13 +841,18 @@ td{padding:10px 14px;color:var(--text);white-space:nowrap;vertical-align:middle}
       <option value="300000">5 min</option>
       <option value="600000">10 min</option>
     </select>
+    <label style="margin-left:8px"><i class="ti ti-database-off"></i> Mode:</label>
+    <select id="scanDataSource" onchange="savePrefs()">
+      <option value="live" selected>Live yfinance</option>
+      <option value="offline">Cache (Offline)</option>
+    </select>
     <span id="countdownSpan" style="margin-left:5px;color:var(--yellow);font-weight:600;font-size:11px"></span>
     <input type="text" id="tickerSearch" placeholder="🔍 Search/Scan ticker…"
       oninput="render()" onkeydown="if(event.key==='Enter') triggerSingleScan()" style="width:170px;margin-left:auto" title="Type ticker (e.g. RELIANCE) and press Enter to trigger a dedicated backend scan.">
   </div>
 
   <!-- Progress Bar -->
-  <div class="prog-wrap" id="progWrap" style="display:none">
+  <div class="prog-wrap" id="progWrap">
     <div class="prog-txt" id="progStatus">Scanning…</div>
     <div class="prog-bar-bg">
       <div class="prog-bar-fill" id="progFill"></div>
@@ -981,6 +988,7 @@ function savePrefs(){
       volMult: document.getElementById('volMult').value,
       turnoverLimit: document.getElementById('turnoverLimit').value,
       scanMode:document.getElementById('scanMode').value,
+      scanDataSource: document.getElementById('scanDataSource').value,
       ema10: emaReq[10], ema20:emaReq[20], ema50:emaReq[50], ema200:emaReq[200],
     }));
   }catch(e){}
@@ -992,6 +1000,7 @@ function loadPrefs(){
     if(p.volMult) document.getElementById('volMult').value=p.volMult;
     if(p.turnoverLimit) document.getElementById('turnoverLimit').value=p.turnoverLimit;
     if(p.scanMode) document.getElementById('scanMode').value=p.scanMode;
+    if(p.scanDataSource) document.getElementById('scanDataSource').value=p.scanDataSource;
     [10,20,50,200].forEach(n=>{
       const v = p['ema'+n];
       if(v!==undefined){
@@ -1318,7 +1327,21 @@ function checkStatus(){
       if(d.signals){
         stocks=preprocess(d.signals);
         document.getElementById('lastScan').textContent=d.last_scan?'Last scan: '+d.last_scan:'';
-        updateCounts(); render();
+        updateCounts(); 
+        
+        // Auto-switch from 'entry' if empty to prevent a confusing blank list
+        if (activeTab === 'entry' && parseInt(document.getElementById('cnt-entry').textContent) === 0) {
+          const tabPriority = ['bullish', 'mixed', 'bearish', 'hv', 'camarilla'];
+          for (const tab of tabPriority) {
+            const cnt = parseInt(document.getElementById('cnt-' + tab).textContent || '0');
+            if (cnt > 0) {
+              setTab(tab);
+              break;
+            }
+          }
+        } else {
+          render();
+        }
       }
       if(d.error&&d.error!=='Scan cancelled'&&d.error!=='Scan stopped by user'){
         showToast('Error: '+d.error, true);
@@ -1334,6 +1357,7 @@ function startScan(){
     vol_mult: document.getElementById('volMult').value,
     turnover_limit: document.getElementById('turnoverLimit').value,
     scan_mode:document.getElementById('scanMode').value,
+    use_cache: document.getElementById('scanDataSource').value === 'offline',
     ema10:  document.getElementById('c10').classList.contains('on'),
     ema20:  document.getElementById('c20').classList.contains('on'),
     ema50:  document.getElementById('c50').classList.contains('on'),
@@ -1364,6 +1388,7 @@ function triggerSingleScan(){
     vol_days: document.getElementById('volDays').value,
     vol_mult: document.getElementById('volMult').value,
     turnover_limit: document.getElementById('turnoverLimit').value,
+    use_cache: document.getElementById('scanDataSource').value === 'offline',
     ema10:  document.getElementById('c10').classList.contains('on'),
     ema20:  document.getElementById('c20').classList.contains('on'),
     ema50:  document.getElementById('c50').classList.contains('on'),
@@ -1542,7 +1567,21 @@ fetch('/results').then(r=>r.json()).then(d=>{
   } else if(d.signals&&d.signals.length>0){
     stocks=preprocess(d.signals);
     document.getElementById('lastScan').textContent=d.last_scan?'Last scan: '+d.last_scan:'';
-    updateCounts(); render();
+    updateCounts();
+    
+    // Auto-switch from 'entry' if empty to prevent a confusing blank list on page load
+    if (activeTab === 'entry' && parseInt(document.getElementById('cnt-entry').textContent) === 0) {
+      const tabPriority = ['bullish', 'mixed', 'bearish', 'hv', 'camarilla'];
+      for (const tab of tabPriority) {
+        const cnt = parseInt(document.getElementById('cnt-' + tab).textContent || '0');
+        if (cnt > 0) {
+          setTab(tab);
+          break;
+        }
+      }
+    } else {
+      render();
+    }
   }
 });
 </script>
