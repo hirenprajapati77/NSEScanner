@@ -103,6 +103,7 @@ def _make_session() -> requests.Session:
 
 
 _SESSION = _make_session()
+_YF_LOCK = threading.Lock()
 
 
 # ─────────────────────────────────────────────────────────────
@@ -298,43 +299,66 @@ def validate_dataframe(df: pd.DataFrame, ticker: str) -> bool:
 
 
 # ─────────────────────────────────────────────────────────────
-# DYNAMIC RELATIVE STRENGTH VS NIFTY (^NSEI)
+# MARKET HOURS & NIFTY RELATIVE STRENGTH ENGINE
 # ─────────────────────────────────────────────────────────────
-_NIFTY_CACHE: Dict[str, float] = {}
+from datetime import time as dt_time, timedelta, timezone
 
-def get_nifty_90d_return() -> float:
+def is_nse_market_open() -> bool:
     """
-    Downloads and caches the 90-day return of the NIFTY index (^NSEI).
+    Checks if the NSE market is currently open (9:15 AM - 3:30 PM IST, Monday - Friday).
+    Uses standard library UTC offset calculation to remain timezone-accurate and dependency-free.
+    """
+    ist_tz = timezone(timedelta(hours=5, minutes=30))
+    now_ist = datetime.now(ist_tz)
+    if now_ist.weekday() >= 5:  # Saturday, Sunday
+        return False
+    market_start = dt_time(9, 15)
+    market_end = dt_time(15, 30)
+    return market_start <= now_ist.time() <= market_end
+
+
+_NIFTY_CACHE: Dict[str, Dict] = {}
+
+def get_nifty_returns() -> tuple:
+    """
+    Downloads and caches both the 20-day and 50-day returns of the NIFTY 50 index (^NSEI).
+    Returns (nifty_20d_return, nifty_50d_return).
     """
     today_str = datetime.now().strftime("%Y-%m-%d")
-    if "return" in _NIFTY_CACHE and _NIFTY_CACHE.get("date") == today_str:
-        return _NIFTY_CACHE["return"]
+    if "returns" in _NIFTY_CACHE and _NIFTY_CACHE.get("date") == today_str:
+        cached = _NIFTY_CACHE["returns"]
+        return cached["20d"], cached["50d"]
     
     try:
-        df = yf.download(
-            "^NSEI",
-            period="6mo",
-            interval="1d",
-            progress=False,
-            auto_adjust=True,
-            timeout=30,
-        )
-        if df is not None and not df.empty and len(df) >= 90:
+        with _YF_LOCK:
+            df = yf.download(
+                "^NSEI",
+                period="6mo",
+                interval="1d",
+                progress=False,
+                auto_adjust=True,
+                timeout=30,
+            )
+        if df is not None and not df.empty and len(df) >= 50:
             if isinstance(df.columns, pd.MultiIndex):
                 df.columns = [c[0].lower() for c in df.columns]
             else:
-                df.columns = [c.lower() for c in df.columns]
+                df.columns = [str(c).lower() for c in df.columns]
             df.dropna(inplace=True)
             close_today = float(df["close"].iloc[-1])
-            close_90d = float(df["close"].iloc[-90])
-            nifty_ret = (close_today - close_90d) / close_90d * 100
-            _NIFTY_CACHE["return"] = nifty_ret
+            close_20d = float(df["close"].iloc[-20])
+            close_50d = float(df["close"].iloc[-50])
+            
+            nifty_20d = (close_today - close_20d) / close_20d * 100
+            nifty_50d = (close_today - close_50d) / close_50d * 100
+            
+            _NIFTY_CACHE["returns"] = {"20d": nifty_20d, "50d": nifty_50d}
             _NIFTY_CACHE["date"] = today_str
-            log.info(f"📈 Nifty 90-day index return calculated: {nifty_ret:.2f}%")
-            return nifty_ret
+            log.info(f"📈 Nifty returns cached: 20d={nifty_20d:.2f}%, 50d={nifty_50d:.2f}%")
+            return nifty_20d, nifty_50d
     except Exception as exc:
         log.error(f"Error fetching Nifty Index returns: {exc}")
-    return 0.0
+    return 0.0, 0.0
 
 
 # ─────────────────────────────────────────────────────────────
@@ -504,14 +528,15 @@ def _download(ticker: str, retries: int = 3) -> Optional[pd.DataFrame]:
 
     for attempt in range(retries):
         try:
-            df = yf.download(
-                ticker,
-                period="5y",
-                interval="1d",
-                progress=False,
-                auto_adjust=True,
-                timeout=30,
-            )
+            with _YF_LOCK:
+                df = yf.download(
+                    ticker,
+                    period="5y",
+                    interval="1d",
+                    progress=False,
+                    auto_adjust=True,
+                    timeout=30,
+                )
             if df is not None and not df.empty:
                 df = normalize_dataframe(df)
                 # Save to cache
@@ -560,10 +585,12 @@ def analyse(
     ticker: str,
     bearish: bool = False,
     cfg_override: Optional[Dict] = None,
+    explain_skip: bool = False,
 ) -> Optional[Dict]:
     """
     Returns a signal dict if the stock passes all filters,
-    or None if it does not qualify.
+    or a skipped explanation dict if explain_skip is True,
+    otherwise None if it does not qualify.
     cfg_override allows per-scan settings without mutating the global CFG.
     """
     cfg      = {**CFG, **(cfg_override or {})}
@@ -574,19 +601,30 @@ def analyse(
     try:
         df = _download(ticker)
         if df is None or df.empty or len(df) < min_len:
+            if explain_skip:
+                return {
+                    "symbol": ticker.replace(".NS", ""),
+                    "skipped": True,
+                    "reason": f"Insufficient price history (requires at least {min_len} days, found {len(df) if df is not None else 0})"
+                }
             return None
 
         # Flatten MultiIndex columns → lowercase strings
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = [c[0].lower() for c in df.columns]
         else:
-            df.columns = [c.lower() for c in df.columns]
+            df.columns = [str(c).lower() for c in df.columns]
 
         df.dropna(inplace=True)
         
         # 1. Critical Fix #2: OHLC Data Integrity Validation
         if not validate_dataframe(df, ticker):
-            log.warning(f"❌ {ticker}: Validation failed — stock excluded from scoring.")
+            if explain_skip:
+                return {
+                    "symbol": ticker.replace(".NS", ""),
+                    "skipped": True,
+                    "reason": "Data integrity validation failed (corrupt pricing or NaNs)"
+                }
             return None
 
         # ── EMAs ──────────────────────────────────────────────
@@ -606,12 +644,24 @@ def analyse(
         vol_avg = float(last["vol_avg"]) if not pd.isna(last["vol_avg"]) else 0.0
 
         if vol_avg == 0:
+            if explain_skip:
+                return {
+                    "symbol": ticker.replace(".NS", ""),
+                    "skipped": True,
+                    "reason": "Average volume is zero"
+                }
             return None
 
         vol_ratio = volume / vol_avg
 
         # ── Volume filter ──────────────────────────────────────
         if vol_ratio < cfg["VOL_MULT"]:
+            if explain_skip:
+                return {
+                    "symbol": ticker.replace(".NS", ""),
+                    "skipped": True,
+                    "reason": f"Volume spike not confirmed (Vol ratio {vol_ratio:.2f}x < {cfg['VOL_MULT']}x)"
+                }
             return None
 
         # ── High Priority Improvement #1: Liquidity Filter ───
@@ -622,6 +672,12 @@ def analyse(
         # Enforce Minimum average turnover
         if avg_turnover < cfg["TURNOVER_LIMIT"]:
             log.info(f"🛡️ {ticker}: Rejected due to low liquidity (₹{turnover_score:.2f} Cr < ₹{cfg['TURNOVER_LIMIT']/10000000:.2f} Cr)")
+            if explain_skip:
+                return {
+                    "symbol": ticker.replace(".NS", ""),
+                    "skipped": True,
+                    "reason": f"Low liquidity (Turnover ₹{turnover_score:.2f} Cr < ₹{cfg['TURNOVER_LIMIT']/10000000:.2f} Cr)"
+                }
             return None
 
         # ── EMA filters ───────────────────────────────────────
@@ -642,17 +698,57 @@ def analyse(
             }
 
         if not all(ema_checks.values()):
+            if explain_skip:
+                failed = [k.replace('_pass', '').upper() for k, v in ema_checks.items() if not v]
+                return {
+                    "symbol": ticker.replace(".NS", ""),
+                    "skipped": True,
+                    "reason": f"Trend alignment failed ({'price below' if not bearish else 'price above'} {', '.join(failed)})"
+                }
             return None
 
         # ── 52-week High/Low window ────────────────────────────
-        lookback        = df.iloc[-hv_days:]
+        lookback        = df.iloc[-252:]  # Enforce strictly 252-day lookback for correct 52-week range
         hv_high         = float(lookback["high"].max())
         hv_low          = float(lookback["low"].min())
         hv_high_idx     = lookback["high"].idxmax()
         hv_date         = hv_high_idx.strftime("%d-%b-%Y")
         days_since_high = int((datetime.now().date() - hv_high_idx.date()).days)
 
-        cam = camarilla_levels(hv_high, hv_low, close)
+        range_52w = hv_high - hv_low
+        if range_52w <= 0:
+            if explain_skip:
+                return {
+                    "symbol": ticker.replace(".NS", ""),
+                    "skipped": True,
+                    "reason": "52-week trading range is zero or negative"
+                }
+            return None
+
+        # ── Camarilla Levels & Math ────────────────────────────
+        pivot = round((hv_high + hv_low + close) / 3, 2)
+        entry = pivot  # Pivot is the institutional entry standard
+
+        cam = {
+            "pivot": pivot,
+            "H1":    round(close + range_52w * 1.1 / 12, 2),
+            "H2":    round(close + range_52w * 1.1 / 6,  2),
+            "H3":    round(close + range_52w * 1.1 / 4,  2),  # Target1 for Bull
+            "H4":    round(close + range_52w * 1.1 / 2,  2),  # Target2 for Bull
+            "L1":    round(close - range_52w * 1.1 / 12, 2),
+            "L2":    round(close - range_52w * 1.1 / 6,  2),
+            "L3":    round(close - range_52w * 1.1 / 4,  2),  # StopLoss for Bull
+            "L4":    round(close - range_52w * 1.1 / 2,  2),
+        }
+
+        if not bearish:
+            target1 = cam["H3"]
+            target2 = cam["H4"]
+            stop_loss = cam["L3"]
+        else:
+            target1 = cam["L3"]
+            target2 = cam["L4"]
+            stop_loss = cam["H3"]
 
         # ── Candle direction ──────────────────────────────────
         body   = close - float(last["open"])
@@ -662,9 +758,8 @@ def analyse(
         pct_above = round((close - hv_low)  / hv_low  * 100, 2) if hv_low  else 0.0
         pct_below = round((hv_high - close) / hv_high * 100, 2) if hv_high else 0.0
 
-        # Bullish: upside to H3; Bearish: downside to L3
-        upside   = round((cam["H3"] - close) / close * 100, 2)
-        downside = round((close - cam["L3"]) / close * 100, 2)
+        upside   = round((target1 - close) / close * 100, 2) if not bearish else round((close - target1) / close * 100, 2)
+        downside = round((close - stop_loss) / close * 100, 2) if not bearish else round((stop_loss - close) / close * 100, 2)
 
         # ── Advanced Quant Indicators ─────────────────────────
         # ATR (14-day Average True Range)
@@ -691,12 +786,31 @@ def analyse(
         # Volume percentile (last 20 days)
         vol_percentile = round(float((df["volume"].iloc[-20:] < volume).mean() * 100), 2)
 
-        # ── High Priority Improvement #2: Relative Strength vs Nifty ───
-        nifty_ret = get_nifty_90d_return()
-        close_90d = float(df["close"].iloc[-90]) if len(df) >= 90 else float(df["close"].iloc[0])
-        stock_ret = (close - close_90d) / close_90d * 100
-        rs_pct = round(stock_ret - nifty_ret, 2)
+        # ── High Priority Improvement #2: 20-Day and 50-Day Relative Strength vs Nifty ───
+        nifty_20d, nifty_50d = get_nifty_returns()
+        
+        # Stock 20-day return
+        close_20d = float(df["close"].iloc[-20]) if len(df) >= 20 else float(df["close"].iloc[0])
+        stock_ret_20d = (close - close_20d) / close_20d * 100
+        rs_pct = round(stock_ret_20d - nifty_20d, 2)
+        
+        # Stock 50-day return (trend confirmation filter)
+        close_50d = float(df["close"].iloc[-50]) if len(df) >= 50 else float(df["close"].iloc[0])
+        stock_ret_50d = (close - close_50d) / close_50d * 100
+        rs_50d = round(stock_ret_50d - nifty_50d, 2)
+        
         rs_score = 10 if rs_pct > 0 else -10
+
+        # Enforce positive 50-day relative strength as a secondary momentum filter
+        if rs_50d <= 0:
+            log.info(f"🛡️ {ticker}: Rejected due to negative 50-day relative strength ({rs_50d:.2f}% <= 0)")
+            if explain_skip:
+                return {
+                    "symbol": ticker.replace(".NS", ""),
+                    "skipped": True,
+                    "reason": f"Negative 50-day relative strength ({rs_50d:.2f}% <= 0)"
+                }
+            return None
 
         # Relative Strength (percentage distance of close relative to 200 EMA)
         ema200_val = float(last["ema200"])
@@ -715,33 +829,32 @@ def analyse(
         else:
             regime = "Consolidation"
 
-        # ── Critical Fix #3: Dynamic ATR Risk Engine ───
-        entry = close
-        target1 = cam["H3"] if not bearish else cam["L3"]
-        target2 = cam["H4"] if not bearish else cam["L4"]
-
-        # Volatility-adjusted 1.5 * ATR stop loss
-        stop_distance = 1.5 * last_atr
-        if not bearish:
-            stop_loss = round(entry - stop_distance, 2)
-        else:
-            stop_loss = round(entry + stop_distance, 2)
-
+        # ── Critical Fix #3: Risk / Reward Calculations ───
+        reward = abs(target1 - entry)
         risk = abs(entry - stop_loss)
+        rr = round(reward / risk, 2) if risk > 0 else 0.0
         risk_percentage = round((risk / entry) * 100, 2)
         
         # Enforce maximum acceptable risk = 5% of entry
         if risk_percentage > 5.0:
             log.info(f"🛡️ {ticker}: Rejected due to high risk ({risk_percentage}% > 5%) — Capital preserved.")
+            if explain_skip:
+                return {
+                    "symbol": ticker.replace(".NS", ""),
+                    "skipped": True,
+                    "reason": f"Risk too high ({risk_percentage}% > 5% of Pivot entry)"
+                }
             return None
 
-        # Risk / Reward calculations
-        reward = abs(target1 - entry)
-        rr = round(reward / risk, 2) if risk > 0 else 0.0
-        
-        # Reject setup if Risk/Reward is poor (e.g. less than 1 : 1.1) to preserve capital
-        if rr < 1.1:
-            log.info(f"🛡️ {ticker}: Rejected due to poor Risk/Reward ratio ({rr} < 1.1) — Capital preserved.")
+        # Enforce minimum Risk/Reward floor limit = 1.5
+        if rr < 1.5:
+            log.info(f"🛡️ {ticker}: Rejected due to poor Risk/Reward ratio ({rr} < 1.5) — Capital preserved.")
+            if explain_skip:
+                return {
+                    "symbol": ticker.replace(".NS", ""),
+                    "skipped": True,
+                    "reason": f"Poor Risk/Reward ratio (1:{rr:.2f} < 1:1.5)"
+                }
             return None
 
         result: Dict = {
@@ -779,9 +892,11 @@ def analyse(
             "regime":            regime,
             "rr":                rr,
             "rs_pct":            rs_pct,
+            "rs_50d":            rs_50d,
             "rs_score":          rs_score,
             "turnover_score":    turnover_score,
             "risk_percentage":   risk_percentage,
+            "sparkline":         df["close"].tail(5).round(2).tolist(),  # Real 5-day price action closing points
             **ema_checks,
         }
 
@@ -789,28 +904,40 @@ def analyse(
         
         # ── High Priority Improvement #3: Confidence Grading Engine ───
         score = result["score"]
-        if score >= 90:
+        if score >= 95:
             result["confidence"] = "A+"
             result["signal_strength"] = "Institutional Strong"
-        elif score >= 80:
+        elif score >= 85:
             result["confidence"] = "A"
-            result["signal_strength"] = "Strong"
+            result["signal_strength"] = "Strong Momentum"
         elif score >= 70:
             result["confidence"] = "B"
-            result["signal_strength"] = "Moderate"
-        elif score >= 60:
+            result["signal_strength"] = "Moderate Setup"
+        elif score >= 55:
             result["confidence"] = "C"
-            result["signal_strength"] = "Weak"
+            result["signal_strength"] = "Weak Signal"
         else:
             result["confidence"] = "D"
-            result["signal_strength"] = "Poor"
+            result["signal_strength"] = "Avoid"
 
         if score < cfg["MIN_SCORE"]:
+            if explain_skip:
+                return {
+                    "symbol": ticker.replace(".NS", ""),
+                    "skipped": True,
+                    "reason": f"Momentum score too low ({score}/100 < {cfg['MIN_SCORE']})"
+                }
             return None
 
         return result
     except Exception as exc:
         log.debug(f"{ticker}: unhandled error — {exc}")
+        if explain_skip:
+            return {
+                "symbol": ticker.replace(".NS", ""),
+                "skipped": True,
+                "reason": f"Unhandled exception during scan: {str(exc)}"
+            }
         return None
 
 
@@ -838,7 +965,7 @@ def run_scan(
     workers  = (cfg_override or {}).get("MAX_WORKERS", CFG["MAX_WORKERS"])
 
     # Download Nifty index first for RS ranking
-    get_nifty_90d_return()
+    get_nifty_returns()
 
     def _task(ticker: str) -> Optional[Dict]:
         if stop_event and stop_event.is_set():
@@ -1070,9 +1197,9 @@ def send_telegram(
         emoji = "🟢" if r.get("signal_type") == "Bull" else "🔴"
         lines.append(
             f"{emoji} *{r['symbol']}* — Confidence: *{r['confidence']}* ({r['signal_strength']})\n"
-            f"  Score: {r['score']}/100 | Price: ₹{r['price']:,.2f}\n"
-            f"  Entry: ₹{r['entry']:,.2f} | T1: ₹{r['target']:,.2f} | SL: ₹{r['stop_loss']:,.2f}\n"
-            f"  R:R: {r['rr']:.1f} | Risk: {r['risk_percentage']}% | RS: {r['rs_pct']:+.1f}%\n"
+            f"  Score: {r['score']}/100 | Price: Rs.{r['price']:,.2f} | Entry (Pivot): Rs.{r['entry']:,.2f}\n"
+            f"  T1 (H3): Rs.{r['target']:,.2f} | T2 (H4): Rs.{r['target2']:,.2f} | SL (L3): Rs.{r['stop_loss']:,.2f}\n"
+            f"  R:R: {r['rr']:.1f}x | Risk: {r['risk_percentage']}% | RS (20d): {r['rs_pct']:+.1f}%\n"
         )
     if len(signals) > 15:
         lines.append(f"_... and {len(signals) - 15} more signals_")
@@ -1121,8 +1248,9 @@ def send_whatsapp(
         emoji = "🟢" if r.get("signal_type") == "Bull" else "🔴"
         lines.append(
             f"{emoji} {r['symbol']} ({r['score']}/100 - {r['confidence']})\n"
-            f"  Entry ₹{r['entry']:,.2f} | T1 ₹{r['target']:,.2f} | SL ₹{r['stop_loss']:,.2f}\n"
-            f"  R:R: {r['rr']:.1f} | Vol: {r['vol_ratio']:.1f}x | {r['candle']}\n"
+            f"  Price Rs.{r['price']:,.2f} | Entry (Pivot) Rs.{r['entry']:,.2f}\n"
+            f"  T1 Rs.{r['target']:,.2f} | T2 Rs.{r['target2']:,.2f} | SL Rs.{r['stop_loss']:,.2f}\n"
+            f"  R:R: {r['rr']:.1f}x | Vol: {r['vol_ratio']:.1f}x | {r['candle']}\n"
         )
     msg = "\n".join(lines)
     url = f"https://api.twilio.com/2010-04-01/Accounts/{sid}/Messages.json"
@@ -1180,6 +1308,7 @@ def save_csv(signals: List[Dict]) -> str:
             "ATR":             r.get("atr", 0.0),
             "RS_Pct":          r.get("rs_pct", 0.0),
             "Turnover_Cr":     r.get("turnover_score", 0.0),
+            "Sparkline":       json.dumps(r.get("sparkline", [])),  # Persist sparkline list as JSON string
             "Scanned_At":      datetime.now().strftime("%Y-%m-%d %H:%M"),
         })
     fname = f"scan_{datetime.now().strftime('%Y%m%d_%H%M')}.csv"

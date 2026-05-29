@@ -6,19 +6,19 @@ __pycache__/
 # Environments
 .env
 .venv
+env/
 venv/
 ENV/
-env/
 
-# Data and CSV logs
+# Databases
+scanner.db
+
+# Scanner Cache and Outputs
+data_cache/
+alert_history.json
+scan_status.json
 scan_*.csv
 
-# OS-specific
+# OS files
 .DS_Store
 Thumbs.db
-
-# IDEs and Editors
-.vscode/
-.idea/
-*.swp
-*.swo

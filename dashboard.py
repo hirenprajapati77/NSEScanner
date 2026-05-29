@@ -4,10 +4,13 @@ NSE Scanner Web Dashboard — Robust v3.0 [Phase 2 Hardened]
 Run:   python dashboard.py
 Open:  http://localhost:5000
 
-Improvements in Phase 2:
-  • Critical Fix #4: Thread-safe state deepcopy architecture across Flask state handlers.
-  • Glassmorphic filters supporting Grade grids, Turnover limits, Risk margins, and R:R ratios.
-  • Safe concurrent multi-threaded execution controls and uptime pings.
+Improvements in Phase 2 & 3:
+  • Structural Camarilla 52W range targets using Pivot entries and StopLoss caps.
+  • Client-side dynamic timers and 5-day SVG sparklines.
+  • Short-term 20d relative strength and सकारात्मक 50d RS positive confirmation filter.
+  • Aligned tabs: Bullish, Bearish, Mixed Caution setups, and Entry Ready setups.
+  • Dedicated single-stock lookup `/scan-single` with skipped filters descriptions feedback.
+  • Real-time NSE Market Hours guard and timezone-aware banner alerts.
 """
 
 import io
@@ -192,6 +195,7 @@ def _bootstrap_cache() -> None:
                 "atr":             _safe(r, "ATR",            float, 0.0),
                 "rs_pct":          _safe(r, "RS_Pct",         float, 0.0),
                 "turnover_score":  _safe(r, "Turnover_Cr",    float, 0.0),
+                "sparkline":       json.loads(_safe(r, "Sparkline", str, "[]")),  # Deserialize sparkline list
                 "ema10_pass":      price > _safe(r, "EMA10",  float, 0.0),
                 "ema20_pass":      price > _safe(r, "EMA20",  float, 0.0),
                 "ema50_pass":      price > _safe(r, "EMA50",  float, 0.0),
@@ -322,6 +326,79 @@ def health():
     return jsonify({"status": "ok", "ts": datetime.now().isoformat()})
 
 
+@app.route("/market_status")
+def market_status():
+    from scanner import is_nse_market_open
+    from datetime import datetime, timezone, timedelta
+    
+    ist_tz = timezone(timedelta(hours=5, minutes=30))
+    now_ist = datetime.now(ist_tz)
+    is_open = is_nse_market_open()
+    
+    return jsonify({
+        "is_open": is_open,
+        "time": now_ist.strftime("%d-%b-%Y %H:%M:%S IST"),
+        "day": now_ist.strftime("%A")
+    })
+
+
+@app.route("/scan-single", methods=["POST"])
+def scan_single():
+    from scanner import analyse, CFG
+    data = request.get_json(force=True, silent=True) or {}
+    ticker = data.get("ticker", "").strip().upper()
+    if not ticker:
+        return jsonify({"error": "Ticker is required."}), 400
+        
+    # Standardize NSE tickers (add .NS if missing and not index)
+    if not ticker.endswith(".NS") and not ticker.startswith("^"):
+        ticker += ".NS"
+
+    cfg_override = {
+        "VOL_DAYS":       int(data.get("vol_days", CFG["VOL_DAYS"])),
+        "VOL_MULT":       float(data.get("vol_mult", CFG["VOL_MULT"])),
+        "EMA_10":         bool(data.get("ema10", True)),
+        "EMA_20":         bool(data.get("ema20", True)),
+        "EMA_50":         bool(data.get("ema50", True)),
+        "EMA_200":        bool(data.get("ema200", True)),
+        "TURNOVER_LIMIT": float(data.get("turnover_limit", CFG["TURNOVER_LIMIT"])),
+    }
+
+    # Attempt to scan for Bullish first
+    res = analyse(ticker, bearish=False, cfg_override=cfg_override, explain_skip=True)
+    
+    # If not a signal (skipped) or returned None, check Bearish
+    if res is None or res.get("skipped"):
+        bull_skip_reason = res.get("reason") if res else "Unknown skip"
+        res_bear = analyse(ticker, bearish=True, cfg_override=cfg_override, explain_skip=True)
+        
+        if res_bear is not None and not res_bear.get("skipped"):
+            res = res_bear
+        else:
+            bear_skip_reason = res_bear.get("reason") if res_bear else "Unknown skip"
+            # Both failed to produce a valid signal. Return the skip reasons.
+            return jsonify({
+                "ok": False,
+                "symbol": ticker.replace(".NS", ""),
+                "message": f"{ticker.replace('.NS', '')}: skipped — {bull_skip_reason} (Bullish) | {bear_skip_reason} (Bearish)"
+            })
+
+    # Valid signal found (Bull or Bear)!
+    # Update active list thread-safely
+    symbol = res["symbol"]
+    with _state_lock:
+        # Remove any existing signal for this ticker
+        _state["signals"] = [s for s in _state["signals"] if s["symbol"] != symbol]
+        _state["signals"].append(res)
+        _state["signals"].sort(key=lambda x: x["score"], reverse=True)
+    _persist_state()
+
+    return jsonify({
+        "ok": True,
+        "signal": res
+    })
+
+
 @app.route("/results")
 def results():
     s = _read_state()
@@ -420,6 +497,7 @@ def export_csv():
             "Days":            r.get("days"),
             "RS_Pct":          r.get("rs_pct", 0.0),
             "Turnover_Cr":     r.get("turnover_score", 0.0),
+            "Sparkline":       json.dumps(r.get("sparkline", [])),
             "Scanned_At":      s["last_scan"],
         })
 
@@ -497,7 +575,7 @@ def update_watchlist():
 
 
 # ─────────────────────────────────────────────────────────────
-# HTML DASHBOARD (inline template with Phase 2 upgrades)
+# HTML DASHBOARD (inline template with Dynamic Upgrades)
 # ─────────────────────────────────────────────────────────────
 HTML = """<!DOCTYPE html>
 <html lang="en">
@@ -508,7 +586,7 @@ HTML = """<!DOCTYPE html>
 <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@latest/dist/tabler-icons.min.css">
 <style>
-:root{--font:\'Outfit\',-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;--r:12px;--bg0:#080b11;--bg1:#0d1117;--bg2:#111827;--bg3:#1f2937;--border:#1f2937;--text:#e5e7eb;--muted:#6b7280;--green:#4ade80;--red:#f87171;--blue:#60a5fa;--yellow:#fbbf24;--teal:#34d399;}
+:root{--font:\'Outfit\',-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;--r:12px;--bg0:#080b11;--bg1:#0d1117;--bg2:#111827;--bg3:#1f2937;--border:#1f2937;--text:#e5e7eb;--muted:#6b7280;--green:#4ade80;--red:#f87171;--blue:#60a5fa;--yellow:#fbbf24;--teal:#34d399;--orange:#fb923c;}
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:var(--font);background:var(--bg0);color:var(--text);padding:16px;font-size:13px;min-height:100vh}
 .wrap{background:var(--bg1);border-radius:var(--r);overflow:hidden;border:1px solid var(--border);box-shadow:0 20px 40px rgba(0,0,0,.5)}
@@ -519,9 +597,13 @@ body{font-family:var(--font);background:var(--bg0);color:var(--text);padding:16p
 .brand .nse{color:var(--blue)}.brand .vol{color:var(--yellow)}.brand .ver{color:var(--muted);font-size:11px;font-weight:400}
 .live-badge{font-size:11px;color:var(--teal);background:#064e3b;padding:4px 12px;border-radius:99px;display:flex;align-items:center;gap:5px}
 
-/* Cold-start banner */
+/* Banner alerts */
 .cold-banner{display:none;background:#1c1200;border-left:3px solid var(--yellow);padding:10px 20px;font-size:12px;color:var(--yellow);align-items:center;gap:8px}
 .cold-banner.show{display:flex}
+.market-banner{display:none;background:#270808;border-left:3px solid var(--red);padding:10px 20px;font-size:12px;color:var(--red);align-items:center;gap:8px}
+
+/* Mobile Scroll hint */
+.mobile-scroll-hint{display:none;font-size:11px;color:var(--muted);padding:8px 20px;background:#090d14;border-bottom:1px solid var(--border);align-items:center;gap:6px;}
 
 /* Tabs */
 .tabs{background:var(--bg2);padding:0 16px;display:flex;gap:4px;border-bottom:1px solid var(--border);flex-wrap:wrap}
@@ -530,7 +612,7 @@ body{font-family:var(--font);background:var(--bg0);color:var(--text);padding:16p
 .tab.active{color:var(--teal);border-color:var(--teal);font-weight:500}
 .tab .cnt{background:#1d4ed8;color:#bfdbfe;border-radius:99px;padding:1px 7px;font-size:10px;font-weight:600}
 .dot{width:8px;height:8px;border-radius:50%;display:inline-block}
-.dot.g{background:var(--green)}.dot.r{background:var(--red)}.dot.o{background:#fb923c}.dot.p{background:#c084fc}
+.dot.g{background:var(--green)}.dot.r{background:var(--red)}.dot.o{background:#fb923c}.dot.p{background:#c084fc}.dot.y{background:#fbbf24}
 
 /* Controls */
 .controls{background:var(--bg2);padding:12px 20px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;border-bottom:1px solid var(--border)}
@@ -582,8 +664,8 @@ td{padding:10px 14px;color:var(--text);white-space:nowrap;vertical-align:middle}
 .price-date{color:#4b5563;font-size:10px;margin-top:2px}
 .up{color:var(--green);font-weight:500}.dn{color:var(--red);font-weight:500}.neutral{color:var(--muted)}
 .sl{color:var(--red);font-weight:600}
-.c-bull{background:#14532d;color:var(--green);border-radius:4px;padding:2px 8px;font-size:10px;font-weight:600}
-.c-bear{background:#450a0a;color:var(--red);border-radius:4px;padding:2px 8px;font-size:10px;border:1px solid #7f1d1d;font-weight:600}
+.c-bull{border-radius:4px;padding:2px 8px;font-size:10px;font-weight:600}
+.c-bear{border-radius:4px;padding:2px 8px;font-size:10px;font-weight:600}
 .d-warn{color:var(--yellow);font-weight:500}
 .ema-dots{display:flex;gap:4px}
 .edot{width:10px;height:10px;border-radius:50%;background:#374151;border:1px solid var(--border)}
@@ -626,11 +708,7 @@ td{padding:10px 14px;color:var(--text);white-space:nowrap;vertical-align:middle}
 .toast.show{opacity:1;transform:translateY(0)}
 .toast.err{border-color:var(--red)}
 
-/* Animations */
-@keyframes spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
-@keyframes pulse{0%{opacity:.3}50%{opacity:1}100%{opacity:.3}}
-
-/* Mobile */
+/* Mobile layout adjustments */
 @media(max-width:768px){
   body{padding:8px}
   .top-bar{padding:10px 14px}
@@ -640,6 +718,7 @@ td{padding:10px 14px;color:var(--text);white-space:nowrap;vertical-align:middle}
   .tab{padding:10px 12px;font-size:11px}
   .controls{padding:10px 14px;gap:8px}
   #scanBtn,#tickerSearch{width:100%;margin-top:4px;margin-left:0 !important}
+  .mobile-scroll-hint{display:flex !important;}
   .action-bar{flex-direction:column;align-items:stretch}
   .action-bar button{width:100%;justify-content:center}
   .modal{width:95% !important}
@@ -654,7 +733,7 @@ td{padding:10px 14px;color:var(--text);white-space:nowrap;vertical-align:middle}
     <div class="brand">
       <i class="ti ti-chart-candlestick" style="color:var(--blue);font-size:18px"></i>
       <span class="nse">NSE</span>&nbsp;<span class="vol">Volume</span>&nbsp;Scanner
-      <span class="ver">v3.0 [Phase 2 Hardened]</span>
+      <span class="ver">v3.0 [Phase 3 Polish]</span>
     </div>
     <div class="live-badge">
       <span style="animation:pulse 1.5s infinite">●</span>
@@ -670,19 +749,34 @@ td{padding:10px 14px;color:var(--text);white-space:nowrap;vertical-align:middle}
       style="margin-left:auto;background:none;border:none;color:var(--yellow);cursor:pointer;font-size:16px">✕</button>
   </div>
 
+  <!-- Market closed banner -->
+  <div class="market-banner" id="marketBanner">
+    <i class="ti ti-alert-triangle"></i>
+    <span>NSE Market is currently Closed — showing data from the last active session. Pausing live timers.</span>
+  </div>
+
+  <!-- Mobile Scroll Hint -->
+  <div class="mobile-scroll-hint">
+    <i class="ti ti-arrow-autofit-width" style="color:var(--teal)"></i>
+    <span>Swipe left/right to view all details (Score, Entry, Risk, R:R, Sparklines, Watch)</span>
+  </div>
+
   <!-- Tabs -->
   <div class="tabs">
-    <div class="tab active" id="tab-bullish"   onclick="setTab('bullish')">
+    <div class="tab active" id="tab-entry"     onclick="setTab('entry')">
+      <span class="dot y"></span> Entry Ready <span class="cnt" id="cnt-entry">0</span>
+    </div>
+    <div class="tab" id="tab-bullish"   onclick="setTab('bullish')">
       <span class="dot g"></span> Bullish <span class="cnt" id="cnt-bullish">0</span>
     </div>
     <div class="tab" id="tab-bearish"   onclick="setTab('bearish')">
       <span class="dot r"></span> Bearish <span class="cnt" id="cnt-bearish">0</span>
     </div>
+    <div class="tab" id="tab-mixed"     onclick="setTab('mixed')">
+      <span class="dot o"></span> Mixed Setup <span class="cnt" id="cnt-mixed">0</span>
+    </div>
     <div class="tab" id="tab-hv"        onclick="setTab('hv')">
       <span class="dot o"></span> New HV Today <span class="cnt" id="cnt-hv">0</span>
-    </div>
-    <div class="tab" id="tab-entry"     onclick="setTab('entry')">
-      <span class="dot g"></span> Entry Ready <span class="cnt" id="cnt-entry">0</span>
     </div>
     <div class="tab" id="tab-camarilla" onclick="setTab('camarilla')">
       <span class="dot p"></span> All Signals <span class="cnt" id="cnt-camarilla">0</span>
@@ -712,7 +806,7 @@ td{padding:10px 14px;color:var(--text);white-space:nowrap;vertical-align:middle}
       <option value="2.5">2.5x</option>
       <option value="3">3x</option>
     </select>
-    <label style="margin-left:8px">Liquidity Filter:</label>
+    <label style="margin-left:8px">Liquidity:</label>
     <select id="turnoverLimit" onchange="savePrefs()">
       <option value="50000000">₹5 Cr Turnover</option>
       <option value="100000000" selected>₹10 Cr Turnover</option>
@@ -745,12 +839,13 @@ td{padding:10px 14px;color:var(--text);white-space:nowrap;vertical-align:middle}
       <option value="300000">5 min</option>
       <option value="600000">10 min</option>
     </select>
-    <input type="text" id="tickerSearch" placeholder="🔍 Search ticker…"
-      oninput="render()" style="width:150px;margin-left:auto">
+    <span id="countdownSpan" style="margin-left:5px;color:var(--yellow);font-weight:600;font-size:11px"></span>
+    <input type="text" id="tickerSearch" placeholder="🔍 Search/Scan ticker…"
+      oninput="render()" onkeydown="if(event.key==='Enter') triggerSingleScan()" style="width:170px;margin-left:auto" title="Type ticker (e.g. RELIANCE) and press Enter to trigger a dedicated backend scan.">
   </div>
 
   <!-- Progress Bar -->
-  <div class="prog-wrap" id="progWrap">
+  <div class="prog-wrap" id="progWrap" style="display:none">
     <div class="prog-txt" id="progStatus">Scanning…</div>
     <div class="prog-bar-bg">
       <div class="prog-bar-fill" id="progFill"></div>
@@ -766,16 +861,17 @@ td{padding:10px 14px;color:var(--text);white-space:nowrap;vertical-align:middle}
   <div class="tbl-wrap">
     <table>
       <thead><tr>
-        <th onclick="sortBy('symbol')">SYMBOL <span class="sort-icon" id="si-symbol"><i class="ti ti-selector"></i></span></th>
-        <th onclick="sortBy('confidence')">CONF <span class="sort-icon" id="si-confidence"><i class="ti ti-selector"></i></span></th>
+        <th onclick="sortBy('symbol')">SYMBOL &amp; 5d SPARKLINE <span class="sort-icon" id="si-symbol"><i class="ti ti-selector"></i></span></th>
+        <th onclick="sortBy('confidence')">CONF GRADE <span class="sort-icon" id="si-confidence"><i class="ti ti-selector"></i></span></th>
         <th onclick="sortBy('score')">SCORE <span class="sort-icon" id="si-score"><i class="ti ti-selector"></i></span></th>
         <th onclick="sortBy('price')">PRICE <span class="sort-icon" id="si-price"><i class="ti ti-selector"></i></span></th>
-        <th onclick="sortBy('entry')">ENTRY <span class="sort-icon" id="si-entry"><i class="ti ti-selector"></i></span></th>
+        <th onclick="sortBy('entry')">ENTRY (PIVOT) <span class="sort-icon" id="si-entry"><i class="ti ti-selector"></i></span></th>
         <th onclick="sortBy('stop_loss')">STOP LOSS <span class="sort-icon" id="si-stop_loss"><i class="ti ti-selector"></i></span></th>
         <th>TARGETS (T1/T2)</th>
         <th onclick="sortBy('risk_percentage')">RISK % <span class="sort-icon" id="si-risk_percentage"><i class="ti ti-selector"></i></span></th>
         <th onclick="sortBy('rr')">R:R <span class="sort-icon" id="si-rr"><i class="ti ti-selector"></i></span></th>
         <th onclick="sortBy('rs_pct')">RS VS NIFTY <span class="sort-icon" id="si-rs_pct"><i class="ti ti-selector"></i></span></th>
+        <th onclick="sortBy('days')">52W AGE <span class="sort-icon" id="si-days"><i class="ti ti-selector"></i></span></th>
         <th onclick="sortBy('turnover_score')">TURNOVER <span class="sort-icon" id="si-turnover_score"><i class="ti ti-selector"></i></span></th>
         <th>EMA ✓</th>
         <th onclick="sortBy('vol_ratio')">VOL <span class="sort-icon" id="si-vol_ratio"><i class="ti ti-selector"></i></span></th>
@@ -831,12 +927,14 @@ td{padding:10px 14px;color:var(--text);white-space:nowrap;vertical-align:middle}
 // ── State ──────────────────────────────────────────────────
 let stocks     = [];
 let watchlist  = [];
-let activeTab  = 'bullish';
+let activeTab  = 'entry';
 let sortState  = {col:'score', desc:true};
 const emaReq   = {10:true,20:true,50:true,200:true};
 let pollTimer  = null;
 let autoTimer  = null;
+let remaining  = 300;
 let coldShown  = false;
+let marketClosed = false;
 
 // ── Helpers ───────────────────────────────────────────────
 const fmt = n => n >= 1000 ? '₹'+n.toLocaleString('en-IN',{maximumFractionDigits:2}) : '₹'+n.toFixed(2);
@@ -845,9 +943,34 @@ const pct = n => (n>0?'+':'')+Number(n).toFixed(2)+'%';
 function showToast(msg, err=false){
   const t=document.getElementById('toast');
   t.classList.toggle('err',err);
+  const icon = t.querySelector('i');
+  if (err) {
+    icon.className = 'ti ti-circle-x';
+    icon.style.color = 'var(--red)';
+  } else {
+    icon.className = 'ti ti-circle-check';
+    icon.style.color = 'var(--teal)';
+  }
   document.getElementById('toastMsg').textContent=msg;
   t.classList.add('show');
-  setTimeout(()=>t.classList.remove('show'),3500);
+  setTimeout(()=>t.classList.remove('show'), 3500);
+}
+
+// ── Price Action SVG Sparkline Generator ────────────────
+function sparklineSVG(prices) {
+  if (!prices || prices.length < 2) return '';
+  const min = Math.min(...prices);
+  const max = Math.max(...prices);
+  const rng = max - min || 1;
+  const width = 65;
+  const height = 20;
+  const pts = prices.map((p, i) =>
+    `${(i/(prices.length-1))*width},${height - 2 - ((p-min)/rng)*16}`
+  ).join(' ');
+  const color = prices[prices.length - 1] >= prices[0] ? '#4ade80' : '#f87171';
+  return `<svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" style="vertical-align:middle;overflow:visible;">
+    <polyline points="${pts}" fill="none" stroke="${color}" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+  </svg>`;
 }
 
 // ── Preferences (localStorage) ───────────────────────────
@@ -941,10 +1064,11 @@ function updateCounts(){
   const vm=parseFloat(document.getElementById('volMult').value);
   const base=stocks.filter(s=>s.vol_ratio>=vm && (!srch||s.symbol.toLowerCase().includes(srch)));
   const counts={
-    bullish:   base.filter(s=>s.signal_type==='Bull'||s.candle==='Bull').length,
-    bearish:   base.filter(s=>s.signal_type==='Bear').length,
+    bullish:   base.filter(s=>s.signal_type==='Bull' && s.candle==='Bull').length,
+    bearish:   base.filter(s=>s.signal_type==='Bear' && s.candle==='Bear').length,
+    mixed:     base.filter(s=>(s.signal_type==='Bull'&&s.candle==='Bear')||(s.signal_type==='Bear'&&s.candle==='Bull')).length,
+    entry:     base.filter(s=>Math.abs(s.price-s.entry)/s.entry<=0.005 && s.vol_ratio>=vm && s.ema10_pass && s.ema20_pass && s.ema50_pass && s.ema200_pass).length,
     hv:        base.filter(s=>s.days<=10).length,
-    entry:     base.filter(s=>Math.abs(s.price-s.entry)/s.entry<=0.02).length,
     camarilla: base.length,
     watchlist: base.filter(s=>watchlist.includes(s.symbol)).length,
   };
@@ -964,10 +1088,11 @@ function render(){
 
   let f=stocks.filter(s=>s.vol_ratio>=vm && (!srch||s.symbol.toLowerCase().includes(srch)));
 
-  if(activeTab==='bullish')   f=f.filter(s=>s.signal_type==='Bull'||(s.signal_type==='Bull')||s.candle==='Bull');
-  else if(activeTab==='bearish')   f=f.filter(s=>s.signal_type==='Bear');
+  if(activeTab==='bullish')        f=f.filter(s=>s.signal_type==='Bull' && s.candle==='Bull');
+  else if(activeTab==='bearish')   f=f.filter(s=>s.signal_type==='Bear' && s.candle==='Bear');
+  else if(activeTab==='mixed')     f=f.filter(s=>(s.signal_type==='Bull'&&s.candle==='Bear')||(s.signal_type==='Bear'&&s.candle==='Bull'));
+  else if(activeTab==='entry')     f=f.filter(s=>Math.abs(s.price-s.entry)/s.entry<=0.005 && s.vol_ratio>=vm && s.ema10_pass && s.ema20_pass && s.ema50_pass && s.ema200_pass);
   else if(activeTab==='hv')        f=f.filter(s=>s.days<=10);
-  else if(activeTab==='entry')     f=f.filter(s=>Math.abs(s.price-s.entry)/s.entry<=0.02);
   else if(activeTab==='watchlist') f=f.filter(s=>watchlist.includes(s.symbol));
 
   // Sort
@@ -991,9 +1116,9 @@ function render(){
     <div class="si"><span class="lbl">Avg score:</span><span class="val">${avg}/100</span></div>`;
 
   if(!f.length){
-    tbody.innerHTML=`<tr><td colspan="15" class="empty-state">
+    tbody.innerHTML=`<tr><td colspan="16" class="empty-state">
       <i class="ti ti-chart-candlestick" style="font-size:32px;color:#374151;display:block;margin-bottom:8px"></i>
-      No signals. Click <b>Run Live Scan</b> to analyse stocks.</td></tr>`;
+      No signals. Click <b>Run Live Scan</b> or search tickers above.</td></tr>`;
     return;
   }
 
@@ -1054,44 +1179,73 @@ function render(){
     if (pctVal > 40) chasePenalty = -20;
     else if (pctVal > 25) chasePenalty = -10;
     
-    let tooltip = `QUANT MULTI-FACTOR MOMENTUM SCORE\n`;
-    tooltip += `• Base Score: 50\n`;
-    if (emaBonus > 0) tooltip += `• EMA Trend Alignment: +${emaBonus}\n`;
-    if (slopeBonus > 0) tooltip += `• Trend Slope Acceleration: +${slopeBonus}\n`;
-    if (volBonus > 0) tooltip += `• Relative Volume Spike: +${volBonus} (${s.vol_ratio.toFixed(1)}x)\n`;
-    if (volPctBonus > 0) tooltip += `• Volume Percentile Peak: +${volPctBonus} (${(s.vol_percentile || 0).toFixed(0)}%)\n`;
-    if (rangeBonus > 0) tooltip += `• Volatility Range Expansion: +${rangeBonus} (${(s.range_expansion || 0).toFixed(1)}x ATR)\n`;
-    if (candleBonus > 0) tooltip += `• Candle Pattern Direction: +${candleBonus}\n`;
-    if (entryBonus > 0) tooltip += `• Low-Risk Support Entry: +${entryBonus}\n`;
-    if (rsBonus !== 0) tooltip += `• Relative Strength vs NIFTY: ${rsBonus > 0 ? '+' : ''}${rsBonus} (${(s.rs_pct || 0).toFixed(1)}%)\n`;
-    if (extendPenalty < 0) tooltip += `• Parabolic Overextension Risk: ${extendPenalty} (${atrDist.toFixed(1)} ATRs from EMA)\n`;
-    if (chasePenalty < 0) tooltip += `• High-Low Chasing Penalty: ${chasePenalty} (${pctVal.toFixed(1)}% above Low)\n`;
+    let tooltip = `QUANT MULTI-FACTOR MOMENTUM SCORE&#10;`;
+    tooltip += `• Base Score: 50&#10;`;
+    if (emaBonus > 0) tooltip += `• EMA Trend Alignment: +${emaBonus}&#10;`;
+    if (slopeBonus > 0) tooltip += `• Trend Slope Acceleration: +${slopeBonus}&#10;`;
+    if (volBonus > 0) tooltip += `• Relative Volume Spike: +${volBonus} (${s.vol_ratio.toFixed(1)}x)&#10;`;
+    if (volPctBonus > 0) tooltip += `• Volume Percentile Peak: +${volPctBonus} (${(s.vol_percentile || 0).toFixed(0)}%)&#10;`;
+    if (rangeBonus > 0) tooltip += `• Volatility Range Expansion: +${rangeBonus} (${(s.range_expansion || 0).toFixed(1)}x ATR)&#10;`;
+    if (candleBonus > 0) tooltip += `• Candle Pattern Direction: +${candleBonus}&#10;`;
+    if (entryBonus > 0) tooltip += `• Low-Risk Support Entry: +${entryBonus}&#10;`;
+    if (rsBonus !== 0) tooltip += `• Relative Strength vs NIFTY: ${rsBonus > 0 ? '+' : ''}${rsBonus} (${(s.rs_pct || 0).toFixed(1)}%)&#10;`;
+    if (extendPenalty < 0) tooltip += `• Parabolic Overextension Risk: ${extendPenalty} (${atrDist.toFixed(1)} ATRs from EMA)&#10;`;
+    if (chasePenalty < 0) tooltip += `• High-Low Chasing Penalty: ${chasePenalty} (${pctVal.toFixed(1)}% above Low)&#10;`;
     tooltip = tooltip.trim();
 
-    // Confidence badge styling
-    let confBadge = '';
-    if (s.confidence === 'A+') confBadge = `<span class="c-bull" style="background:#064e3b;color:#a7f3d0;border:1px solid #047857">${s.confidence}</span>`;
-    else if (s.confidence === 'A') confBadge = `<span class="c-bull" style="background:#1e3a8a;color:#bfdbfe;border:1px solid #1d4ed8">${s.confidence}</span>`;
-    else if (s.confidence === 'B') confBadge = `<span class="neutral" style="background:#78350f;color:#fde68a;border:1px solid #d97706;padding:2px 8px;border-radius:4px;font-weight:600;font-size:10px">${s.confidence}</span>`;
-    else if (s.confidence === 'C') confBadge = `<span class="c-bear" style="background:#311005;color:#ffedd5;border:1px solid #9a3412">${s.confidence}</span>`;
-    else confBadge = `<span class="c-bear" style="background:#450a0a;color:#fca5a5;border:1px solid #7f1d1d">${s.confidence}</span>`;
+    // Confidence badge styling with custom colors per grade
+    let confColor = '#6b7280';
+    let confBG = '#1f2937';
+    let confBorder = '1px solid #374151';
+    
+    if (s.confidence === 'A+') {
+      confColor = '#fbbf24'; confBG = '#1e1b4b'; confBorder = '1px solid #eab308';
+    } else if (s.confidence === 'A') {
+      confColor = '#4ade80'; confBG = '#064e3b'; confBorder = '1px solid #047857';
+    } else if (s.confidence === 'B') {
+      confColor = '#60a5fa'; confBG = '#172554'; confBorder = '1px solid #1d4ed8';
+    } else if (s.confidence === 'C') {
+      confColor = '#fb923c'; confBG = '#2c1505'; confBorder = '1px solid #ea580c';
+    } else if (s.confidence === 'D') {
+      confColor = '#f87171'; confBG = '#450a0a'; confBorder = '1px solid #dc2626';
+    }
+    
+    const confBadge = `<span class="c-bull" style="background:${confBG};color:${confColor};border:${confBorder};display:inline-block;padding:3px 10px">${s.confidence}</span>`;
 
+    // 52W age (DAYS) column styling
+    let ageColor = '#f87171'; // stale (>90d)
+    if (s.days <= 7) ageColor = '#4ade80';       // fresh
+    else if (s.days <= 30) ageColor = '#fbbf24';  // yellow
+    else if (s.days <= 90) ageColor = '#fb923c';  // orange
+    
+    const ageLabel = s.days === 0 ? 'Today' : s.days === 1 ? '1d' : s.days + 'd';
+
+    // Risk and reward styling
     const riskColor = s.risk_percentage > 4.0 ? 'dn' : s.risk_percentage > 3.0 ? 'd-warn' : 'up';
+    const rrColor = s.rr >= 3.0 ? 'up' : s.rr >= 1.5 ? 'd-warn' : 'dn';
     const rsColor = s.rs_pct > 0 ? 'up' : 'dn';
+    const volColor = s.vol_ratio >= 3.0 ? '#f87171' : s.vol_ratio >= 2.0 ? '#fbbf24' : '#4ade80';
 
     return `<tr>
       <td>
-        <span class="sym">${s.symbol}</span><br>${sigBadge}
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:12px">
+          <div>
+            <span class="sym">${s.symbol}</span><br>${sigBadge}
+          </div>
+          <div style="padding-top:4px" title="5-day Price Action Sparkline">
+            ${sparklineSVG(s.sparkline)}
+          </div>
+        </div>
         <div style="font-size:9px;color:#6b7280;margin-top:5px;display:flex;align-items:center;gap:4px"
           title="Regime: ${s.regime || 'Consolidation'} | 52W Low ${fmt(s.hv_low)} → High ${fmt(s.hv_high)} — at ${rPct.toFixed(1)}%">
           <span>L</span>
-          <div style="width:55px;height:3px;background:#374151;border-radius:2px;position:relative">
+          <div style="width:105px;height:3px;background:#374151;border-radius:2px;position:relative">
             <div style="position:absolute;left:${rPct}%;top:-2px;width:6px;height:6px;border-radius:50%;background:var(--blue);box-shadow:0 0 3px var(--blue)"></div>
           </div>
           <span>H</span>
         </div>
       </td>
-      <td><div style="text-align:center">${confBadge}</div><div style="font-size:9px;color:var(--muted);margin-top:4px;text-align:center">${s.signal_strength || ''}</div></td>
+      <td style="cursor:help" title="${tooltip}"><div style="text-align:center">${confBadge}</div><div style="font-size:9px;color:var(--muted);margin-top:4px;text-align:center">${s.signal_strength || ''}</div></td>
       <td><span class="score" style="cursor:help;" title="${tooltip}">${s.score}<span class="den">/100</span></span></td>
       <td><div class="price-main">${fmt(s.price)}</div><div class="price-date">● ${s.scanned_date||'Today'}</div></td>
       <td>${fmt(s.entry)}</td>
@@ -1101,12 +1255,13 @@ function render(){
         <div class="cam-h3" style="color:var(--blue)">T2 ${fmt(s.target2 || 0)}</div>
       </td>
       <td class="${riskColor}">${s.risk_percentage ? s.risk_percentage.toFixed(1) + '%' : '—'}</td>
-      <td class="neutral">1:${s.rr ? s.rr.toFixed(1) : '—'}</td>
+      <td class="${rrColor}" style="font-weight:600">${s.rr ? s.rr.toFixed(1) + 'x' : '—'}</td>
       <td class="${rsColor}">${s.rs_pct ? (s.rs_pct > 0 ? '+' : '') + s.rs_pct.toFixed(1) + '%' : '—'}</td>
-      <td class="neutral" style="font-weight:600">${s.turnover_score ? s.turnover_score.toFixed(1) + ' Cr' : '—'}</td>
+      <td style="color:${ageColor};font-weight:600">${ageLabel}</td>
+      <td class="neutral" style="font-weight:600">${s.turnover_score ? '₹' + s.turnover_score.toFixed(2) + ' Cr' : '—'}</td>
       <td><div class="ema-dots">${eDots}</div></td>
       <td>
-        <div class="vol-bar"><div class="vol-fill ${vClass}" style="width:${volPct}%"></div></div>
+        <div class="vol-bar"><div class="vol-fill" style="width:${volPct}%;background:${volColor}"></div></div>
         <br><span style="font-size:10px;color:var(--muted)">${s.vol_ratio.toFixed(2)}x</span>
       </td>
       <td><span class="${s.candle==='Bull'?'c-bull':'c-bear'}">${s.candle}</span></td>
@@ -1152,7 +1307,14 @@ function checkStatus(){
       if(d.progress) updateProgress(d.progress);
     } else {
       setScanningUI(false);
-      if(pollTimer){clearInterval(pollTimer);pollTimer=null;showToast('Scan completed! '+( d.signals?d.signals.length:0)+' signals found.');}
+      // Auto-dismiss cold-start banners once scanning finishes
+      document.getElementById('coldBanner').classList.remove('show');
+      
+      if(pollTimer){
+        clearInterval(pollTimer);
+        pollTimer=null;
+        showToast('Scan completed! '+(d.signals?d.signals.length:0)+' signals found.');
+      }
       if(d.signals){
         stocks=preprocess(d.signals);
         document.getElementById('lastScan').textContent=d.last_scan?'Last scan: '+d.last_scan:'';
@@ -1191,6 +1353,47 @@ function startScan(){
     }).catch(()=>showToast('Failed to start scan.',true));
 }
 
+// ── Single stock search scan ──────────────────────────────
+function triggerSingleScan(){
+  const val = document.getElementById('tickerSearch').value.trim();
+  if(!val) return;
+  showToast('Single stock scan triggered for ' + val.toUpperCase() + '…');
+  
+  const params = {
+    ticker: val,
+    vol_days: document.getElementById('volDays').value,
+    vol_mult: document.getElementById('volMult').value,
+    turnover_limit: document.getElementById('turnoverLimit').value,
+    ema10:  document.getElementById('c10').classList.contains('on'),
+    ema20:  document.getElementById('c20').classList.contains('on'),
+    ema50:  document.getElementById('c50').classList.contains('on'),
+    ema200: document.getElementById('c200').classList.contains('on'),
+  };
+  
+  fetch('/scan-single', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(params)
+  })
+  .then(r => r.json())
+  .then(d => {
+    if (d.ok) {
+      showToast('Momentum signal triggered for ' + d.signal.symbol + '!');
+      
+      const idx = stocks.findIndex(s => s.symbol === d.signal.symbol);
+      if (idx !== -1) stocks[idx] = d.signal;
+      else stocks.push(d.signal);
+      
+      stocks.sort((a,b) => b.score - a.score);
+      updateCounts();
+      render();
+    } else {
+      showToast(d.message, true);
+    }
+  })
+  .catch(() => showToast('Single scan failed.', true));
+}
+
 function stopScan(){
   fetch('/stop',{method:'POST'}).then(r=>r.json())
     .then(d=>{showToast(d.message||'Stopped.');setScanningUI(false);if(pollTimer){clearInterval(pollTimer);pollTimer=null;}})
@@ -1213,15 +1416,55 @@ function triggerAlerts(){
     .then(r=>r.json()).then(d=>showToast(d.message)).catch(()=>showToast('Alert failed.',true));
 }
 
-// ── Auto-scan ─────────────────────────────────────────────
+// ── Auto-scan Countdown Timer ─────────────────────────────
 function toggleAutoScan(){
   if(autoTimer){clearInterval(autoTimer);autoTimer=null;}
   const v=document.getElementById('autoScanSel').value;
-  if(v!=='off'){
-    const ms=parseInt(v);
-    showToast(`Auto-scan every ${ms/60000} min activated.`);
-    autoTimer=setInterval(()=>{if(!pollTimer) startScan();},ms);
+  const cd=document.getElementById('countdownSpan');
+  if(v==='off'){
+    cd.textContent='';
+    return;
   }
+  
+  remaining = parseInt(v) / 1000;
+  showToast(`Auto-scan every ${parseInt(v)/60000} min activated.`);
+  
+  autoTimer = setInterval(()=>{
+    // Pause timer client-side if market hours are closed
+    if (marketClosed) {
+      cd.textContent = '(Market Closed)';
+      return;
+    }
+    remaining--;
+    if(remaining<=0){
+      if(!pollTimer) startScan();
+      const nextV=document.getElementById('autoScanSel').value;
+      remaining = nextV==='off' ? 300 : parseInt(nextV)/1000;
+    }
+    const m=Math.floor(remaining/60);
+    const s=String(remaining%60).padStart(2,'0');
+    cd.textContent=`(Next scan in ${m}:${s})`;
+  }, 1000);
+}
+
+// ── Market status checks ──────────────────────────────
+let marketTimer = null;
+function checkMarketStatus(){
+  fetch('/market_status')
+    .then(r=>r.json())
+    .then(d=>{
+      marketClosed = !d.is_open;
+      const mb = document.getElementById('marketBanner');
+      if (marketClosed) {
+        mb.style.display = 'flex';
+        mb.querySelector('span').textContent = `NSE Market is Closed (${d.time}) — showing last session data. Live scanners paused.`;
+        if (autoTimer) {
+          document.getElementById('countdownSpan').textContent = '(Market Closed)';
+        }
+      } else {
+        mb.style.display = 'none';
+      }
+    }).catch(()=>{});
 }
 
 // ── Alerts Modal ──────────────────────────────────────────
@@ -1289,6 +1532,8 @@ function detectColdStart(){
 loadPrefs();
 loadWatchlist();
 detectColdStart();
+checkMarketStatus();
+marketTimer = setInterval(checkMarketStatus, 30000); // Check market operational state every 30s
 
 fetch('/results').then(r=>r.json()).then(d=>{
   if(d.scanning){
