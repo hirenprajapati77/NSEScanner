@@ -13,10 +13,17 @@ Improvements over v2.0:
   • Expanded + deduplicated Nifty-500 universe (~120 stocks)
   • save_csv() returns filename for downstream use
   • send_telegram / send_whatsapp accept cfg_override dict
+  • Strict historical local CSV persistent caching (1 hour threshold)
+  • Stale cache fallback during API outtages
+  • Advanced technical indicators (Pandas Wilder ATR, Range Expansion, Slope, RS, Volume Percentile, Regime Status)
+  • Dynamic Stops capped at 5% risk max entry price
+  • Risk/Reward filtering (rr < 1.1) to preserve capital
+  • Telegram / WhatsApp alert deduplication cooldown (4 hours)
 """
 
 import os
 import time
+import json
 import logging
 import threading
 from datetime import datetime
@@ -354,6 +361,17 @@ def analyse(
         if len(df) < min_len:
             return None
 
+        # Strict Data Quality & Validation
+        if (df["high"] < df["low"]).any():
+            log.warning(f"⚠️ {ticker}: Inverted OHLC ranges detected (high < low) — skipping.")
+            return None
+        if (df["volume"] < 0).any():
+            log.warning(f"⚠️ {ticker}: Inverted volume ranges detected (< 0) — skipping.")
+            return None
+        if (df["close"] <= 0).any():
+            log.warning(f"⚠️ {ticker}: Invalid pricing detected (<= 0) — skipping.")
+            return None
+
         # ── EMAs ──────────────────────────────────────────────
         df["ema10"]  = df["close"].ewm(span=10,  adjust=False).mean()
         df["ema20"]  = df["close"].ewm(span=20,  adjust=False).mean()
@@ -463,6 +481,35 @@ def analyse(
         else:
             regime = "Consolidation"
 
+        # Capital Preservation & Risk Management Capping
+        # Standard dynamic stop: Pivot - 1.5 * ATR (for long), Pivot + 1.5 * ATR (for short)
+        atr_stop_long = round(cam["pivot"] - 1.5 * last_atr, 2)
+        atr_stop_short = round(cam["pivot"] + 1.5 * last_atr, 2)
+        
+        # Enforce stop-loss dynamically: use the tighter of Camarilla or ATR stop, but cap risk at 5% max entry price
+        if not bearish:
+            stop_loss = max(cam["L3"], atr_stop_long)
+            # Cap stop loss at max 5% below entry to prevent extreme downside ruin
+            max_sl_cap = round(cam["pivot"] * 0.95, 2)
+            if stop_loss < max_sl_cap:
+                stop_loss = max_sl_cap
+        else:
+            stop_loss = min(cam["H3"], atr_stop_short)
+            # Cap stop loss at max 5% above entry for short setups
+            max_sl_cap = round(cam["pivot"] * 1.05, 2)
+            if stop_loss > max_sl_cap:
+                stop_loss = max_sl_cap
+
+        # Dynamic Risk/Reward calculation based on entry pivot, target, and capital-preserved stop loss
+        risk = abs(cam["pivot"] - stop_loss)
+        reward = abs(cam["target"] - cam["pivot"]) if not bearish else abs(cam["pivot"] - cam["L3"])
+        rr = round(reward / risk, 2) if risk > 0 else 0.0
+        
+        # Reject setup if Risk/Reward is poor (e.g. less than 1 : 1.1) to preserve capital
+        if rr < 1.1:
+            log.info(f"🛡️ {ticker}: Rejected due to poor Risk/Reward ratio ({rr} < 1.1) — Capital preserved.")
+            return None
+
         result: Dict = {
             "symbol":      ticker.replace(".NS", ""),
             "signal_type": "Bear" if bearish else "Bull",
@@ -475,8 +522,8 @@ def analyse(
             "pct_below":   pct_below,
             "upside":      upside,
             "downside":    downside,
-            # For bearish: target is L3, stop-loss is H3
-            "stop_loss":   cam["L3"] if not bearish else cam["H3"],
+            # Use capital-preserved Stop Loss
+            "stop_loss":   stop_loss,
             "target":      cam["H3"] if not bearish else cam["L3"],
             "entry":       cam["pivot"],
             "cam":         cam,
@@ -496,6 +543,7 @@ def analyse(
             "vol_percentile":  vol_percentile,
             "relative_strength": relative_strength,
             "regime":         regime,
+            "rr":             rr,
             **ema_checks,
         }
 
@@ -504,7 +552,6 @@ def analyse(
             return None
 
         return result
-
     except Exception as exc:
         log.debug(f"{ticker}: unhandled error — {exc}")
         return None
@@ -569,7 +616,7 @@ def run_scan(
 # ─────────────────────────────────────────────────────────────
 def print_table(signals: List[Dict]) -> None:
     if not signals:
-        print("\n  No signals found with current filters.\n")
+        log.info("\n  No signals found with current filters.\n")
         return
 
     mode = signals[0].get("signal_type", "Bull") if signals else "Bull"
@@ -596,6 +643,48 @@ def print_table(signals: List[Dict]) -> None:
 
 
 # ─────────────────────────────────────────────────────────────
+# ALERT DEDUPLICATION & COOLDOWN
+# ─────────────────────────────────────────────────────────────
+ALERT_HISTORY_FILE = "alert_history.json"
+
+def filter_cooldown_signals(signals: List[Dict], channel: str) -> List[Dict]:
+    """
+    Filters out signals that were alerted recently (within 4 hours).
+    channel is 'tg' or 'wa' to track cooldowns independently per channel.
+    """
+    now = time.time()
+    history = {}
+    if os.path.exists(ALERT_HISTORY_FILE):
+        try:
+            with open(ALERT_HISTORY_FILE, encoding="utf-8") as fh:
+                history = json.load(fh)
+        except Exception:
+            pass
+
+    # Clean old history (older than 4 hours)
+    cutoff = now - (4 * 3600)
+    history = {k: ts for k, ts in history.items() if ts > cutoff}
+
+    filtered = []
+    updated_history = dict(history)
+    for s in signals:
+        key = f"{s['symbol']}_{s['signal_type']}_{channel}"
+        if key in history:
+            log.info(f"⏳ {s['symbol']} ({s['signal_type']}) signal in cooldown for {channel} — skipping alert.")
+            continue
+        filtered.append(s)
+        updated_history[key] = now
+
+    try:
+        with open(ALERT_HISTORY_FILE, "w", encoding="utf-8") as fh:
+            json.dump(updated_history, fh)
+    except Exception:
+        pass
+
+    return filtered
+
+
+# ─────────────────────────────────────────────────────────────
 # TELEGRAM ALERT
 # ─────────────────────────────────────────────────────────────
 def send_telegram(
@@ -607,6 +696,12 @@ def send_telegram(
     chat_id = cfg.get("TG_CHAT_ID", "")
     if not token or not chat_id:
         log.warning("Telegram not configured — skipping.")
+        return
+
+    # Apply channel-aware cooldown deduplication
+    signals = filter_cooldown_signals(signals, "tg")
+    if not signals:
+        log.info("No new signals to alert on Telegram after cooldown filtering.")
         return
 
     now   = datetime.now().strftime("%d %b %Y %H:%M")
@@ -655,6 +750,12 @@ def send_whatsapp(
     to    = cfg.get("TWILIO_TO",    "")
     if not all([sid, token, to]):
         log.warning("WhatsApp (Twilio) not configured — skipping.")
+        return
+
+    # Apply channel-aware cooldown deduplication
+    signals = filter_cooldown_signals(signals, "wa")
+    if not signals:
+        log.info("No new signals to alert on WhatsApp after cooldown filtering.")
         return
 
     now   = datetime.now().strftime("%d %b %Y %H:%M")

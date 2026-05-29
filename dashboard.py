@@ -69,9 +69,11 @@ _stop_event:  threading.Event = threading.Event()
 _scan_thread: threading.Thread = None   # type: ignore[assignment]
 
 
+import copy
+
 def _read_state() -> dict:
     with _state_lock:
-        return dict(_state)
+        return copy.deepcopy(_state)
 
 
 def _update_state(**kwargs) -> None:
