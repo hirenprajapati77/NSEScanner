@@ -313,14 +313,17 @@ def get_nifty_90d_return() -> float:
     try:
         df = yf.download(
             "^NSEI",
-            period="6m",
+            period="6mo",
             interval="1d",
             progress=False,
             auto_adjust=True,
-            session=_SESSION,
             timeout=30,
         )
         if df is not None and not df.empty and len(df) >= 90:
+            if isinstance(df.columns, pd.MultiIndex):
+                df.columns = [c[0].lower() for c in df.columns]
+            else:
+                df.columns = [c.lower() for c in df.columns]
             df.dropna(inplace=True)
             close_today = float(df["close"].iloc[-1])
             close_90d = float(df["close"].iloc[-90])
@@ -478,7 +481,6 @@ def _download(ticker: str, retries: int = 3) -> Optional[pd.DataFrame]:
                 interval="1d",
                 progress=False,
                 auto_adjust=True,
-                session=_SESSION,
                 timeout=30,
             )
             if df is not None and not df.empty:
