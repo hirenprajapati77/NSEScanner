@@ -1,8 +1,23 @@
-yfinance>=0.2.36
-pandas>=2.0.0
-requests>=2.31.0
+# NSE Camarilla Volume Scanner v3.0
+# Python 3.8+ compatible
+# Generated: 2026-05
+
+# ── Web framework ─────────────────────────────────────────
+flask>=2.3.0,<4.0.0
+gunicorn>=21.2.0              # Production WSGI server (used by Procfile)
+
+# ── Data & finance ────────────────────────────────────────
+pandas>=2.0.0,<3.0.0
+yfinance>=0.2.40              # Yahoo Finance data (keep updated — API changes often)
+numpy>=1.24.0,<2.0.0          # Required by pandas/yfinance
+
+# ── HTTP & networking ─────────────────────────────────────
+requests>=2.31.0,<3.0.0
+urllib3>=1.26.0,<3.0.0        # HTTPAdapter + Retry — must be compatible with requests
+
+# ── Environment & config ──────────────────────────────────
 python-dotenv>=1.0.0
-flask>=3.0.0
-gunicorn>=21.2.0
 
-
+# ── Optional: faster yfinance HTML parsing ────────────────
+lxml>=4.9.0                   # Speeds up yfinance ticker parsing
+beautifulsoup4>=4.12.0        # Used internally by yfinance
