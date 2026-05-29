@@ -176,17 +176,24 @@ def camarilla_levels(high: float, low: float, close: float) -> Dict[str, float]:
 
 
 # ─────────────────────────────────────────────────────────────
-# SCORE CALCULATION  (0–100, bearish-aware)
+# SCORE CALCULATION  (0–100, professional multi-factor engine)
 # ─────────────────────────────────────────────────────────────
 def compute_score(row: Dict, bearish: bool = False) -> int:
     score = 50  # base
 
-    # +5 per EMA passed
+    # 1. Trend Factor (EMAs passed: up to +20)
     for ema in ("ema10", "ema20", "ema50", "ema200"):
         if row.get(ema + "_pass"):
             score += 5
 
-    # Volume bonus
+    # 2. Trend Slope Factor (up to +5)
+    slope = row.get("ema20_slope", 0.0)
+    if not bearish and slope > 0.3:
+        score += 5
+    elif bearish and slope < -0.3:
+        score += 5
+
+    # 3. Volume Spike Factor (up to +15)
     vol_ratio = row.get("vol_ratio", 1.0)
     if vol_ratio >= 3.0:
         score += 15
@@ -195,41 +202,88 @@ def compute_score(row: Dict, bearish: bool = False) -> int:
     elif vol_ratio >= 1.5:
         score += 5
 
-    # Candle alignment bonus
+    # 4. Volume Percentile Factor (up to +5)
+    vol_pct = row.get("vol_percentile", 0.0)
+    if vol_pct >= 90:
+        score += 5
+
+    # 5. ATR Range Expansion / Breakout Factor (up to +5)
+    range_exp = row.get("range_expansion", 1.0)
+    if range_exp >= 1.5:
+        score += 5
+
+    # 6. Candle Direction Factor (up to +5)
     if not bearish and row.get("candle") == "Bull":
         score += 5
     elif bearish and row.get("candle") == "Bear":
         score += 5
 
-    # Distance from reference level
+    # 7. Volatility-Adjusted Entry Support Zone (up to +5)
+    atr_dist = row.get("atr_dist", 0.0)
     if not bearish:
-        pct = row.get("pct_above", 100.0)   # % above 52W low
-        if pct < 5:
-            score += 5
-        elif pct < 10:
-            score += 2
-        elif pct > 50:
-            score -= 40
-        elif pct > 30:
-            score -= 30
-        elif pct > 25:
+        if atr_dist <= 1.2:
+            score += 5   # close to support
+    else:
+        if atr_dist >= -1.2:
+            score += 5   # close to resistance
+
+    # 8. Volatility-Adjusted Overextension Penalty (up to -30)
+    if not bearish:
+        if atr_dist > 3.0:
+            score -= 30  # overextended buying risk
+        elif atr_dist > 2.0:
+            score -= 15
+    else:
+        if atr_dist < -3.0:
+            score -= 30  # overextended selling risk
+        elif atr_dist < -2.0:
+            score -= 15
+
+    # 9. 52-Week Low Chasing Penalty (up to -20)
+    if not bearish:
+        pct_above = row.get("pct_above", 100.0)
+        if pct_above > 40:
             score -= 20
-        elif pct > 15:
+        elif pct_above > 25:
             score -= 10
     else:
-        pct = row.get("pct_below", 100.0)   # % below 52W high
-        if pct < 5:
-            score += 5
-        elif pct < 10:
-            score += 2
+        pct_below = row.get("pct_below", 100.0)
+        if pct_below > 40:
+            score -= 20
+        elif pct_below > 25:
+            score -= 10
 
     return min(100, max(0, score))
 
 
 # ─────────────────────────────────────────────────────────────
-# YFINANCE DOWNLOAD  (with per-attempt retry)
+# YFINANCE DOWNLOAD  (with fault-tolerant persistent caching)
 # ─────────────────────────────────────────────────────────────
+CACHE_DIR = "data_cache"
+
 def _download(ticker: str, retries: int = 3) -> Optional[pd.DataFrame]:
+    # Ensure cache directory exists
+    if not os.path.exists(CACHE_DIR):
+        try:
+            os.makedirs(CACHE_DIR)
+        except Exception:
+            pass
+
+    cache_path = os.path.join(CACHE_DIR, f"{ticker}.csv")
+    
+    # Check cache validity (reuse if modified within last 1 hour)
+    if os.path.exists(cache_path):
+        try:
+            mtime = os.path.getmtime(cache_path)
+            # 3600 seconds = 1 hour
+            if time.time() - mtime < 3600:
+                df = pd.read_csv(cache_path, index_col=0, parse_dates=True)
+                if df is not None and not df.empty:
+                    log.debug(f"{ticker}: Loaded from local cache")
+                    return df
+        except Exception:
+            pass
+
     for attempt in range(retries):
         try:
             df = yf.download(
@@ -242,6 +296,11 @@ def _download(ticker: str, retries: int = 3) -> Optional[pd.DataFrame]:
                 timeout=30,
             )
             if df is not None and not df.empty:
+                # Save to cache
+                try:
+                    df.to_csv(cache_path)
+                except Exception:
+                    pass
                 return df
         except Exception as exc:
             if attempt < retries - 1:
@@ -249,6 +308,15 @@ def _download(ticker: str, retries: int = 3) -> Optional[pd.DataFrame]:
                 log.debug(f"{ticker}: attempt {attempt + 1} failed ({exc}), retrying in {wait:.1f}s")
                 time.sleep(wait)
             else:
+                # Fallback to older cache if download completely failed (extreme resilience)
+                if os.path.exists(cache_path):
+                    try:
+                        df = pd.read_csv(cache_path, index_col=0, parse_dates=True)
+                        if df is not None and not df.empty:
+                            log.warning(f"{ticker}: Download failed; falling back to stale local cache")
+                            return df
+                    except Exception:
+                        pass
                 log.debug(f"{ticker}: all {retries} download attempts failed — {exc}")
     return None
 
@@ -297,6 +365,8 @@ def analyse(
 
         last    = df.iloc[-1]
         close   = float(last["close"])
+        high    = float(last["high"])
+        low     = float(last["low"])
         volume  = float(last["volume"])
         vol_avg = float(last["vol_avg"]) if not pd.isna(last["vol_avg"]) else 0.0
 
@@ -351,6 +421,48 @@ def analyse(
         upside   = round((cam["H3"] - close) / close * 100, 2)
         downside = round((close - cam["L3"]) / close * 100, 2)
 
+        # ── Advanced Quant Indicators ─────────────────────────
+        # ATR (14-day Average True Range)
+        highs = df["high"]
+        lows = df["low"]
+        closes = df["close"].shift(1)
+        tr1 = highs - lows
+        tr2 = (highs - closes).abs()
+        tr3 = (lows - closes).abs()
+        tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+        df["atr"] = tr.rolling(window=14).mean()
+        
+        last_atr = float(df["atr"].iloc[-1]) if not pd.isna(df["atr"].iloc[-1]) else (close * 0.02)
+        today_range = high - low
+        range_expansion = round(today_range / last_atr, 2) if last_atr else 1.0
+        
+        # EMA 20 Slope (5-day percentage slope)
+        prev_ema20 = float(df["ema20"].iloc[-5]) if len(df) >= 5 else float(last["ema20"])
+        ema20_slope = round((float(last["ema20"]) - prev_ema20) / prev_ema20 * 100, 4) if prev_ema20 else 0.0
+        
+        # ATR-based overextension distance
+        atr_dist = round((close - float(last["ema20"])) / last_atr, 2) if last_atr else 0.0
+        
+        # Volume percentile (last 20 days)
+        vol_percentile = round(float((df["volume"].iloc[-20:] < volume).mean() * 100), 2)
+
+        # Relative Strength (percentage distance of close relative to 200 EMA)
+        ema200_val = float(last["ema200"])
+        relative_strength = round((close - ema200_val) / ema200_val * 100, 2) if ema200_val else 0.0
+
+        # Market Regime Status
+        ema50_val = float(last["ema50"])
+        if close > ema50_val and ema50_val > ema200_val:
+            regime = "Strong Bullish"
+        elif close > ema50_val and ema50_val <= ema200_val:
+            regime = "Moderate Bullish"
+        elif close < ema50_val and ema50_val < ema200_val:
+            regime = "Strong Bearish"
+        elif close < ema50_val and ema50_val >= ema200_val:
+            regime = "Moderate Bearish"
+        else:
+            regime = "Consolidation"
+
         result: Dict = {
             "symbol":      ticker.replace(".NS", ""),
             "signal_type": "Bear" if bearish else "Bull",
@@ -377,6 +489,13 @@ def analyse(
             "ema50":       round(float(last["ema50"]),  2),
             "ema200":      round(float(last["ema200"]), 2),
             "scanned_date": df.index[-1].strftime("%d-%b-%Y"),
+            "atr":         round(last_atr, 2),
+            "range_expansion": range_expansion,
+            "ema20_slope":    ema20_slope,
+            "atr_dist":       atr_dist,
+            "vol_percentile":  vol_percentile,
+            "relative_strength": relative_strength,
+            "regime":         regime,
             **ema_checks,
         }
 
@@ -591,6 +710,13 @@ def save_csv(signals: List[Dict]) -> str:
             "HV_Low":      r["hv_low"],
             "HV_Date":     r["hv_date"],
             "Days":        r["days"],
+            "EMA20_Slope": r.get("ema20_slope", 0.0),
+            "ATR_Dist":    r.get("atr_dist", 0.0),
+            "Vol_Percentile": r.get("vol_percentile", 0.0),
+            "Range_Expansion": r.get("range_expansion", 1.0),
+            "ATR":         r.get("atr", 0.0),
+            "Relative_Strength": r.get("relative_strength", 0.0),
+            "Regime":      r.get("regime", "Consolidation"),
             "Scanned_At":  datetime.now().strftime("%Y-%m-%d %H:%M"),
         })
     fname = f"scan_{datetime.now().strftime('%Y%m%d_%H%M')}.csv"

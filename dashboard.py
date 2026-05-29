@@ -1014,40 +1014,61 @@ function render(){
     [10, 20, 50, 200].forEach(n => {
       if (s['ema' + n + '_pass']) emaBonus += 5;
     });
+    
+    let slopeBonus = 0;
+    const slope = s.ema20_slope || 0.0;
+    if (!isBearish && slope > 0.3) slopeBonus = 5;
+    else if (isBearish && slope < -0.3) slopeBonus = 5;
+    
     let volBonus = 0;
     if (s.vol_ratio >= 3.0) volBonus = 15;
     else if (s.vol_ratio >= 2.0) volBonus = 10;
     else if (s.vol_ratio >= 1.5) volBonus = 5;
+    
+    let volPctBonus = (s.vol_percentile || 0) >= 90 ? 5 : 0;
+    let rangeBonus = (s.range_expansion || 0) >= 1.5 ? 5 : 0;
+    
     let candleBonus = 0;
     if (!isBearish && s.candle === 'Bull') candleBonus = 5;
     else if (isBearish && s.candle === 'Bear') candleBonus = 5;
-    let lowPenalty = 0;
+    
+    let entryBonus = 0;
+    const atrDist = s.atr_dist || 0.0;
+    if (!isBearish && atrDist <= 1.2) entryBonus = 5;
+    else if (isBearish && atrDist >= -1.2) entryBonus = 5;
+    
+    let extendPenalty = 0;
     if (!isBearish) {
-      const pctVal = s.pct_above;
-      if (pctVal < 5) lowPenalty = 5;
-      else if (pctVal < 10) lowPenalty = 2;
-      else if (pctVal > 50) lowPenalty = -40;
-      else if (pctVal > 30) lowPenalty = -30;
-      else if (pctVal > 25) lowPenalty = -20;
-      else if (pctVal > 15) lowPenalty = -10;
+      if (atrDist > 3.0) extendPenalty = -30;
+      else if (atrDist > 2.0) extendPenalty = -15;
     } else {
-      const pctVal = s.pct_below;
-      if (pctVal < 5) lowPenalty = 5;
-      else if (pctVal < 10) lowPenalty = 2;
+      if (atrDist < -3.0) extendPenalty = -30;
+      else if (atrDist < -2.0) extendPenalty = -15;
     }
-    let tooltip = `Base Score: 50\n`;
-    if (emaBonus > 0) tooltip += `+${emaBonus} for EMAs passed\n`;
-    if (volBonus > 0) tooltip += `+${volBonus} for Volume spike (${s.vol_ratio.toFixed(1)}x)\n`;
-    if (candleBonus > 0) tooltip += `+${candleBonus} for Candle alignment\n`;
-    if (lowPenalty > 0) tooltip += `+${lowPenalty} for Favorable entry zone\n`;
-    if (lowPenalty < 0) tooltip += `${lowPenalty} Penalty: Chasing (${(!isBearish ? s.pct_above : s.pct_below).toFixed(1)}% from reference)`;
+    
+    let chasePenalty = 0;
+    const pctVal = !isBearish ? s.pct_above : s.pct_below;
+    if (pctVal > 40) chasePenalty = -20;
+    else if (pctVal > 25) chasePenalty = -10;
+    
+    let tooltip = `QUANT MULTI-FACTOR MOMENTUM SCORE\n`;
+    tooltip += `• Base Score: 50\n`;
+    if (emaBonus > 0) tooltip += `• EMA Trend Alignment: +${emaBonus}\n`;
+    if (slopeBonus > 0) tooltip += `• Trend Slope Acceleration: +${slopeBonus}\n`;
+    if (volBonus > 0) tooltip += `• Relative Volume Spike: +${volBonus} (${s.vol_ratio.toFixed(1)}x)\n`;
+    if (volPctBonus > 0) tooltip += `• Volume Percentile Peak: +${volPctBonus} (${(s.vol_percentile || 0).toFixed(0)}%)\n`;
+    if (rangeBonus > 0) tooltip += `• Volatility Range Expansion: +${rangeBonus} (${(s.range_expansion || 0).toFixed(1)}x ATR)\n`;
+    if (candleBonus > 0) tooltip += `• Candle Pattern Direction: +${candleBonus}\n`;
+    if (entryBonus > 0) tooltip += `• Low-Risk Support Entry: +${entryBonus}\n`;
+    if (extendPenalty < 0) tooltip += `• Parabolic Overextension Risk: ${extendPenalty} (${atrDist.toFixed(1)} ATRs from EMA)\n`;
+    if (chasePenalty < 0) tooltip += `• High-Low Chasing Penalty: ${chasePenalty} (${pctVal.toFixed(1)}% above Low)\n`;
     tooltip = tooltip.trim();
 
     return `<tr>
       <td>
         <span class="sym">${s.symbol}</span><br>${sigBadge}
         <div style="font-size:9px;color:#6b7280;margin-top:5px;display:flex;align-items:center;gap:4px"
-          title="52W Low ${fmt(s.hv_low)} → High ${fmt(s.hv_high)} — at ${rPct.toFixed(1)}%">
+          title="Regime: ${s.regime || 'Consolidation'} | 52W Low ${fmt(s.hv_low)} → High ${fmt(s.hv_high)} — at ${rPct.toFixed(1)}%">
           <span>L</span>
           <div style="width:55px;height:3px;background:#374151;border-radius:2px;position:relative">
             <div style="position:absolute;left:${rPct}%;top:-2px;width:6px;height:6px;border-radius:50%;background:var(--blue);box-shadow:0 0 3px var(--blue)"></div>
