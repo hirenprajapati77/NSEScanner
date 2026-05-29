@@ -1,28 +1,13 @@
 """
-NSE Scanner Web Dashboard — Robust v3.0
-========================================
+NSE Scanner Web Dashboard — Robust v3.0 [Phase 2 Hardened]
+==========================================================
 Run:   python dashboard.py
 Open:  http://localhost:5000
 
-Improvements over v2.0:
-  • threading.Lock on ALL state reads/writes — no race conditions
-  • In-memory _state dict as primary; JSON file as persistence backup
-  • /stop  endpoint — gracefully cancels an in-progress scan
-  • /export endpoint — download current results as CSV
-  • /health endpoint — Render uptime ping / load-balancer probe
-  • Bearish scan support via scan_mode param (bullish / bearish / both)
-  • ETA seconds surfaced in progress payload
-  • Scan-ID guard — rejects duplicate concurrent scan requests
-  • Credentials stored server-side in config.json (never echoed in plain)
-  • Watchlist persisted server-side in watchlist.json
-  • Masked /get_config response (shows last 4 chars only)
-  • Cold-start banner for Render free-tier spin-up delay
-  • UI: BUY/SELL badge respects signal_type
-  • UI: Export CSV button in action bar
-  • UI: Stop Scan button while scanning
-  • UI: ETA shown in progress bar
-  • UI: filter settings persisted in localStorage
-  • UI: Bearish tab actually populated when scan_mode includes bearish
+Improvements in Phase 2:
+  • Critical Fix #4: Thread-safe state deepcopy architecture across Flask state handlers.
+  • Glassmorphic filters supporting Grade grids, Turnover limits, Risk margins, and R:R ratios.
+  • Safe concurrent multi-threaded execution controls and uptime pings.
 """
 
 import io
@@ -30,6 +15,7 @@ import json
 import os
 import threading
 import uuid
+import copy
 from datetime import datetime
 
 import pandas as pd
@@ -69,23 +55,23 @@ _stop_event:  threading.Event = threading.Event()
 _scan_thread: threading.Thread = None   # type: ignore[assignment]
 
 
-import copy
-
 def _read_state() -> dict:
+    """Thread-safe state reader using deepcopy to prevent concurrency race conditions."""
     with _state_lock:
         return copy.deepcopy(_state)
 
 
 def _update_state(**kwargs) -> None:
+    """Thread-safe state updater."""
     with _state_lock:
         _state.update(kwargs)
     _persist_state()
 
 
 def _persist_state() -> None:
-    """Write state to disk so it survives gunicorn worker restarts."""
+    """Write state snapshot to disk for persistence."""
     with _state_lock:
-        snapshot = dict(_state)
+        snapshot = copy.deepcopy(_state)
     try:
         with open(STATUS_FILE, "w", encoding="utf-8") as fh:
             json.dump(snapshot, fh, indent=2)
@@ -94,7 +80,7 @@ def _persist_state() -> None:
 
 
 def _load_state_from_disk() -> None:
-    """Restore state from disk on startup (picks up last scan results)."""
+    """Restore state snapshot from disk on startup."""
     if not os.path.exists(STATUS_FILE):
         return
     try:
@@ -110,7 +96,7 @@ def _load_state_from_disk() -> None:
 
 
 # ─────────────────────────────────────────────────────────────
-# CONFIG PERSISTENCE  (credentials stored server-side)
+# CONFIG PERSISTENCE
 # ─────────────────────────────────────────────────────────────
 def _load_config() -> dict:
     if os.path.exists(CONFIG_FILE):
@@ -130,7 +116,6 @@ def _save_config(data: dict) -> None:
 
 
 def _mask(value: str) -> str:
-    """Return last 4 chars masked for display."""
     if not value:
         return ""
     return "•" * max(0, len(value) - 4) + value[-4:]
@@ -177,31 +162,41 @@ def _bootstrap_cache() -> None:
         for _, r in df.iterrows():
             price = _safe(r, "Price", float, 0.0)
             signals.append({
-                "symbol":      _safe(r, "Symbol"),
-                "score":       _safe(r, "Score",    int,   0),
-                "signal_type": _safe(r, "Signal",   str,   "Bull"),
-                "price":       price,
-                "entry":       _safe(r, "Entry",    float, 0.0),
-                "target":      _safe(r, "Target_H3",   float, 0.0),
-                "stop_loss":   _safe(r, "StopLoss_L3", float, 0.0),
-                "upside":      _safe(r, "Upside_%", float, 0.0),
-                "vol_ratio":   _safe(r, "Vol_Ratio",float, 0.0),
-                "candle":      _safe(r, "Candle"),
-                "ema10":       _safe(r, "EMA10",    float, 0.0),
-                "ema20":       _safe(r, "EMA20",    float, 0.0),
-                "ema50":       _safe(r, "EMA50",    float, 0.0),
-                "ema200":      _safe(r, "EMA200",   float, 0.0),
-                "hv_high":     _safe(r, "HV_High",  float, 0.0),
-                "hv_low":      _safe(r, "HV_Low",   float, 0.0),
-                "hv_date":     _safe(r, "HV_Date"),
-                "days":        _safe(r, "Days",     int,   0),
-                "pct_above":   0.0,
-                "pct_below":   0.0,
-                "ema10_pass":  price > _safe(r, "EMA10",  float, 0.0),
-                "ema20_pass":  price > _safe(r, "EMA20",  float, 0.0),
-                "ema50_pass":  price > _safe(r, "EMA50",  float, 0.0),
-                "ema200_pass": price > _safe(r, "EMA200", float, 0.0),
-                "scanned_date": _safe(r, "Scanned_At"),
+                "symbol":          _safe(r, "Symbol"),
+                "score":           _safe(r, "Score",          int,   0),
+                "confidence":      _safe(r, "Confidence",     str,   "B"),
+                "signal_strength": _safe(r, "Strength",       str,   "Moderate"),
+                "signal_type":     _safe(r, "Signal",         str,   "Bull"),
+                "price":           price,
+                "entry":           _safe(r, "Entry",          float, 0.0),
+                "target":          _safe(r, "Target_H3",      float, 0.0),
+                "target2":         _safe(r, "Target_H4",      float, 0.0),
+                "stop_loss":       _safe(r, "StopLoss_L3",    float, 0.0),
+                "risk_percentage": _safe(r, "Risk_%",         float, 0.0),
+                "rr":              _safe(r, "R:R",            float, 0.0),
+                "upside":          _safe(r, "Upside_%",       float, 0.0),
+                "vol_ratio":       _safe(r, "Vol_Ratio",      float, 0.0),
+                "candle":          _safe(r, "Candle"),
+                "ema10":           _safe(r, "EMA10",          float, 0.0),
+                "ema20":           _safe(r, "EMA20",          float, 0.0),
+                "ema50":           _safe(r, "EMA50",          float, 0.0),
+                "ema200":          _safe(r, "EMA200",         float, 0.0),
+                "hv_high":         _safe(r, "HV_High",        float, 0.0),
+                "hv_low":          _safe(r, "HV_Low",         float, 0.0),
+                "hv_date":         _safe(r, "HV_Date"),
+                "days":            _safe(r, "Days",           int,   0),
+                "ema20_slope":     _safe(r, "EMA20_Slope",    float, 0.0),
+                "atr_dist":        _safe(r, "ATR_Dist",       float, 0.0),
+                "vol_percentile":  _safe(r, "Vol_Percentile", float, 0.0),
+                "range_expansion": _safe(r, "Range_Expansion",float, 1.0),
+                "atr":             _safe(r, "ATR",            float, 0.0),
+                "rs_pct":          _safe(r, "RS_Pct",         float, 0.0),
+                "turnover_score":  _safe(r, "Turnover_Cr",    float, 0.0),
+                "ema10_pass":      price > _safe(r, "EMA10",  float, 0.0),
+                "ema20_pass":      price > _safe(r, "EMA20",  float, 0.0),
+                "ema50_pass":      price > _safe(r, "EMA50",  float, 0.0),
+                "ema200_pass":     price > _safe(r, "EMA200", float, 0.0),
+                "scanned_date":    _safe(r, "Scanned_At"),
             })
 
         t_str = csvs[-1].replace("scan_", "").replace(".csv", "")
@@ -222,28 +217,28 @@ _bootstrap_cache()
 # BACKGROUND SCAN WORKER
 # ─────────────────────────────────────────────────────────────
 def _do_scan(params: dict, scan_id: str) -> None:
-    """Runs in a background thread. Populates _state as it progresses."""
+    """Runs in a background thread. Populates thread-safe _state as it progresses."""
     global _scan_thread
 
     cfg_override = {
-        "VOL_DAYS":    int(params.get("vol_days", CFG["VOL_DAYS"])),
-        "VOL_MULT":    float(params.get("vol_mult", CFG["VOL_MULT"])),
-        "EMA_10":      bool(params.get("ema10", True)),
-        "EMA_20":      bool(params.get("ema20", True)),
-        "EMA_50":      bool(params.get("ema50", True)),
-        "EMA_200":     bool(params.get("ema200", True)),
-        "TG_TOKEN":    params.get("tg_token",    _load_config().get("tg_token",    "")),
-        "TG_CHAT_ID":  params.get("tg_chat_id",  _load_config().get("tg_chat_id",  "")),
-        "TWILIO_SID":  params.get("twilio_sid",  _load_config().get("twilio_sid",  "")),
-        "TWILIO_TOKEN":params.get("twilio_token",_load_config().get("twilio_token","")),
-        "TWILIO_TO":   params.get("twilio_to",   _load_config().get("twilio_to",   "")),
+        "VOL_DAYS":       int(params.get("vol_days", CFG["VOL_DAYS"])),
+        "VOL_MULT":       float(params.get("vol_mult", CFG["VOL_MULT"])),
+        "EMA_10":         bool(params.get("ema10", True)),
+        "EMA_20":         bool(params.get("ema20", True)),
+        "EMA_50":         bool(params.get("ema50", True)),
+        "EMA_200":        bool(params.get("ema200", True)),
+        "TG_TOKEN":       params.get("tg_token",     _load_config().get("tg_token",    "")),
+        "TG_CHAT_ID":     params.get("tg_chat_id",   _load_config().get("tg_chat_id",  "")),
+        "TWILIO_SID":     params.get("twilio_sid",   _load_config().get("twilio_sid",  "")),
+        "TWILIO_TOKEN":   params.get("twilio_token", _load_config().get("twilio_token","")),
+        "TWILIO_TO":      params.get("twilio_to",    _load_config().get("twilio_to",   "")),
+        "TURNOVER_LIMIT": float(params.get("turnover_limit", CFG["TURNOVER_LIMIT"])),
     }
 
     scan_mode = params.get("scan_mode", "bullish")   # bullish | bearish | both
     tickers   = params.get("tickers") or NIFTY500_SAMPLE
 
     def _progress(current: int, total: int, ticker: str, eta: int = 0) -> None:
-        # Abort cleanly if this scan was superseded
         if _state.get("scan_id") != scan_id:
             _stop_event.set()
         _update_state(
@@ -277,11 +272,10 @@ def _do_scan(params: dict, scan_id: str) -> None:
             )
             all_signals.extend(bear)
 
-        # Sort combined results by score desc
         all_signals.sort(key=lambda x: x["score"], reverse=True)
 
         if not _stop_event.is_set():
-            fname = save_csv(all_signals)
+            save_csv(all_signals)
             now   = datetime.now().strftime("%d %b %Y %H:%M")
             _update_state(
                 signals=all_signals,
@@ -325,7 +319,6 @@ def index():
 
 @app.route("/health")
 def health():
-    """Render uptime check / load-balancer probe."""
     return jsonify({"status": "ok", "ts": datetime.now().isoformat()})
 
 
@@ -395,7 +388,6 @@ def stop_scan():
 
 @app.route("/export")
 def export_csv():
-    """Stream current results as a downloadable CSV."""
     s = _read_state()
     if not s["signals"]:
         return jsonify({"error": "No results to export"}), 404
@@ -403,25 +395,32 @@ def export_csv():
     rows = []
     for r in s["signals"]:
         rows.append({
-            "Symbol":      r.get("symbol"),
-            "Score":       r.get("score"),
-            "Signal":      r.get("signal_type", "Bull"),
-            "Price":       r.get("price"),
-            "Entry":       r.get("entry"),
-            "Target_H3":   r.get("target"),
-            "StopLoss_L3": r.get("stop_loss"),
-            "Upside_%":    r.get("upside"),
-            "Vol_Ratio":   r.get("vol_ratio"),
-            "Candle":      r.get("candle"),
-            "EMA10":       r.get("ema10"),
-            "EMA20":       r.get("ema20"),
-            "EMA50":       r.get("ema50"),
-            "EMA200":      r.get("ema200"),
-            "HV_High":     r.get("hv_high"),
-            "HV_Low":      r.get("hv_low"),
-            "HV_Date":     r.get("hv_date"),
-            "Days":        r.get("days"),
-            "Scanned_At":  s["last_scan"],
+            "Symbol":          r.get("symbol"),
+            "Score":           r.get("score"),
+            "Confidence":      r.get("confidence", "B"),
+            "Strength":        r.get("signal_strength", "Moderate"),
+            "Signal":          r.get("signal_type", "Bull"),
+            "Price":           r.get("price"),
+            "Entry":           r.get("entry"),
+            "Target_H3":       r.get("target"),
+            "Target_H4":       r.get("target2"),
+            "StopLoss_L3":     r.get("stop_loss"),
+            "Risk_%":          r.get("risk_percentage"),
+            "R:R":             r.get("rr"),
+            "Upside_%":        r.get("upside"),
+            "Vol_Ratio":       r.get("vol_ratio"),
+            "Candle":          r.get("candle"),
+            "EMA10":           r.get("ema10"),
+            "EMA20":           r.get("ema20"),
+            "EMA50":           r.get("ema50"),
+            "EMA200":          r.get("ema200"),
+            "HV_High":         r.get("hv_high"),
+            "HV_Low":          r.get("hv_low"),
+            "HV_Date":         r.get("hv_date"),
+            "Days":            r.get("days"),
+            "RS_Pct":          r.get("rs_pct", 0.0),
+            "Turnover_Cr":     r.get("turnover_score", 0.0),
+            "Scanned_At":      s["last_scan"],
         })
 
     buf = io.StringIO()
@@ -451,12 +450,11 @@ def trigger_alerts():
         return jsonify({"message": "No signals to alert."})
     send_telegram(s["signals"], cfg_override=cfg_ov)
     send_whatsapp(s["signals"], cfg_override=cfg_ov)
-    return jsonify({"message": f"Alerts sent for {len(s['signals'])} signal(s)."})
+    return jsonify({"message": f"Alerts processed for {len(s['signals'])} signal(s)."})
 
 
 @app.route("/get_config")
 def get_config():
-    """Return config with sensitive values masked."""
     cfg = _load_config()
     return jsonify({
         "tg_token":    _mask(cfg.get("tg_token",    "")),
@@ -499,7 +497,7 @@ def update_watchlist():
 
 
 # ─────────────────────────────────────────────────────────────
-# HTML DASHBOARD (inline template)
+# HTML DASHBOARD (inline template with Phase 2 upgrades)
 # ─────────────────────────────────────────────────────────────
 HTML = """<!DOCTYPE html>
 <html lang="en">
@@ -583,7 +581,7 @@ td{padding:10px 14px;color:var(--text);white-space:nowrap;vertical-align:middle}
 .price-main{color:var(--blue);font-weight:600;font-size:13px}
 .price-date{color:#4b5563;font-size:10px;margin-top:2px}
 .up{color:var(--green);font-weight:500}.dn{color:var(--red);font-weight:500}.neutral{color:var(--muted)}
-.sl{color:var(--red);font-weight:500}
+.sl{color:var(--red);font-weight:600}
 .c-bull{background:#14532d;color:var(--green);border-radius:4px;padding:2px 8px;font-size:10px;font-weight:600}
 .c-bear{background:#450a0a;color:var(--red);border-radius:4px;padding:2px 8px;font-size:10px;border:1px solid #7f1d1d;font-weight:600}
 .d-warn{color:var(--yellow);font-weight:500}
@@ -656,7 +654,7 @@ td{padding:10px 14px;color:var(--text);white-space:nowrap;vertical-align:middle}
     <div class="brand">
       <i class="ti ti-chart-candlestick" style="color:var(--blue);font-size:18px"></i>
       <span class="nse">NSE</span>&nbsp;<span class="vol">Volume</span>&nbsp;Scanner
-      <span class="ver">v3.0</span>
+      <span class="ver">v3.0 [Phase 2 Hardened]</span>
     </div>
     <div class="live-badge">
       <span style="animation:pulse 1.5s infinite">●</span>
@@ -664,7 +662,7 @@ td{padding:10px 14px;color:var(--text);white-space:nowrap;vertical-align:middle}
     </div>
   </div>
 
-  <!-- Cold-start banner (shown if server just woke from Render free-tier sleep) -->
+  <!-- Cold-start banner -->
   <div class="cold-banner" id="coldBanner">
     <i class="ti ti-clock-pause"></i>
     <span>Server is waking up from sleep (Render free tier) — first scan may take 30-60 s longer than usual.</span>
@@ -706,10 +704,6 @@ td{padding:10px 14px;color:var(--text);white-space:nowrap;vertical-align:middle}
       <option value="50">50 Day Avg</option>
       <option value="100">100 Day Avg</option>
       <option value="200">200 Day Avg</option>
-      <option value="250">1Y Avg (250d)</option>
-      <option value="500">2Y Avg (500d)</option>
-      <option value="750">3Y Avg (750d)</option>
-      <option value="1250">5Y Avg (1250d)</option>
     </select>
     <label style="margin-left:8px">≥</label>
     <select id="volMult" onchange="savePrefs();render()">
@@ -717,6 +711,13 @@ td{padding:10px 14px;color:var(--text);white-space:nowrap;vertical-align:middle}
       <option value="2" selected>2x</option>
       <option value="2.5">2.5x</option>
       <option value="3">3x</option>
+    </select>
+    <label style="margin-left:8px">Liquidity Filter:</label>
+    <select id="turnoverLimit" onchange="savePrefs()">
+      <option value="50000000">₹5 Cr Turnover</option>
+      <option value="100000000" selected>₹10 Cr Turnover</option>
+      <option value="200000000">₹20 Cr Turnover</option>
+      <option value="500000000">₹50 Cr Turnover</option>
     </select>
     <label style="margin-left:8px">Scan:</label>
     <select id="scanMode" onchange="savePrefs()">
@@ -766,16 +767,16 @@ td{padding:10px 14px;color:var(--text);white-space:nowrap;vertical-align:middle}
     <table>
       <thead><tr>
         <th onclick="sortBy('symbol')">SYMBOL <span class="sort-icon" id="si-symbol"><i class="ti ti-selector"></i></span></th>
+        <th onclick="sortBy('confidence')">CONF <span class="sort-icon" id="si-confidence"><i class="ti ti-selector"></i></span></th>
         <th onclick="sortBy('score')">SCORE <span class="sort-icon" id="si-score"><i class="ti ti-selector"></i></span></th>
-        <th onclick="sortBy('hv_date')">HV DATE <span class="sort-icon" id="si-hv_date"><i class="ti ti-selector"></i></span></th>
-        <th onclick="sortBy('days')">DAYS <span class="sort-icon" id="si-days"><i class="ti ti-selector"></i></span></th>
-        <th onclick="sortBy('hv_low')">HV LOW <span class="sort-icon" id="si-hv_low"><i class="ti ti-selector"></i></span></th>
-        <th onclick="sortBy('hv_high')">HV HIGH <span class="sort-icon" id="si-hv_high"><i class="ti ti-selector"></i></span></th>
         <th onclick="sortBy('price')">PRICE <span class="sort-icon" id="si-price"><i class="ti ti-selector"></i></span></th>
-        <th onclick="sortBy('pct_above')">% ABOVE <span class="sort-icon" id="si-pct_above"><i class="ti ti-selector"></i></span></th>
-        <th onclick="sortBy('upside')">UPSIDE <span class="sort-icon" id="si-upside"><i class="ti ti-selector"></i></span></th>
+        <th onclick="sortBy('entry')">ENTRY <span class="sort-icon" id="si-entry"><i class="ti ti-selector"></i></span></th>
+        <th onclick="sortBy('stop_loss')">STOP LOSS <span class="sort-icon" id="si-stop_loss"><i class="ti ti-selector"></i></span></th>
+        <th>TARGETS (T1/T2)</th>
+        <th onclick="sortBy('risk_percentage')">RISK % <span class="sort-icon" id="si-risk_percentage"><i class="ti ti-selector"></i></span></th>
         <th onclick="sortBy('rr')">R:R <span class="sort-icon" id="si-rr"><i class="ti ti-selector"></i></span></th>
-        <th>CAM LEVELS</th>
+        <th onclick="sortBy('rs_pct')">RS VS NIFTY <span class="sort-icon" id="si-rs_pct"><i class="ti ti-selector"></i></span></th>
+        <th onclick="sortBy('turnover_score')">TURNOVER <span class="sort-icon" id="si-turnover_score"><i class="ti ti-selector"></i></span></th>
         <th>EMA ✓</th>
         <th onclick="sortBy('vol_ratio')">VOL <span class="sort-icon" id="si-vol_ratio"><i class="ti ti-selector"></i></span></th>
         <th onclick="sortBy('candle')">CANDLE <span class="sort-icon" id="si-candle"><i class="ti ti-selector"></i></span></th>
@@ -852,9 +853,10 @@ function showToast(msg, err=false){
 // ── Preferences (localStorage) ───────────────────────────
 function savePrefs(){
   try{
-    localStorage.setItem('nse_prefs',JSON.stringify({
+    localStorage.setItem('nse_prefs_h',JSON.stringify({
       volDays: document.getElementById('volDays').value,
       volMult: document.getElementById('volMult').value,
+      turnoverLimit: document.getElementById('turnoverLimit').value,
       scanMode:document.getElementById('scanMode').value,
       ema10: emaReq[10], ema20:emaReq[20], ema50:emaReq[50], ema200:emaReq[200],
     }));
@@ -862,9 +864,10 @@ function savePrefs(){
 }
 function loadPrefs(){
   try{
-    const p=JSON.parse(localStorage.getItem('nse_prefs')||'{}');
+    const p=JSON.parse(localStorage.getItem('nse_prefs_h')||'{}');
     if(p.volDays) document.getElementById('volDays').value=p.volDays;
     if(p.volMult) document.getElementById('volMult').value=p.volMult;
+    if(p.turnoverLimit) document.getElementById('turnoverLimit').value=p.turnoverLimit;
     if(p.scanMode) document.getElementById('scanMode').value=p.scanMode;
     [10,20,50,200].forEach(n=>{
       const v = p['ema'+n];
@@ -878,7 +881,7 @@ function loadPrefs(){
   }catch(e){}
 }
 
-// ── Watchlist (server-side + localStorage fallback) ──────
+// ── Watchlist ─────────────────────────────────────────────
 function loadWatchlist(){
   fetch('/watchlist').then(r=>r.json()).then(d=>{
     watchlist=d.watchlist||[];
@@ -928,8 +931,6 @@ function sortBy(col){
 // ── Pre-process signals ───────────────────────────────────
 function preprocess(sigs){
   return (sigs||[]).map(s=>{
-    const risk=s.entry-s.stop_loss, reward=s.target-s.entry;
-    s.rr = risk>0 ? parseFloat((reward/risk).toFixed(2)) : 0;
     return s;
   });
 }
@@ -1005,8 +1006,6 @@ function render(){
       return `<div class="edot ${pass?'pass':''}" title="EMA${n} ${pass?'✓':'✗'}"></div>`;
     }).join('');
     const rPct=s.hv_high!==s.hv_low?Math.min(100,Math.max(0,((s.price-s.hv_low)/(s.hv_high-s.hv_low))*100)):50;
-    const dClass=s.days<=10?'up':s.days<=30?'d-warn':'dn';
-    const pClass=s.pct_above<10?'up':s.pct_above<=25?'d-warn':'dn';
     const isFav=watchlist.includes(s.symbol);
     const sigBadge=isBull?`<span class="sig-buy">BUY</span>`:`<span class="sig-sell">SELL</span>`;
     
@@ -1038,6 +1037,8 @@ function render(){
     const atrDist = s.atr_dist || 0.0;
     if (!isBearish && atrDist <= 1.2) entryBonus = 5;
     else if (isBearish && atrDist >= -1.2) entryBonus = 5;
+
+    let rsBonus = s.rs_score || 0;
     
     let extendPenalty = 0;
     if (!isBearish) {
@@ -1062,9 +1063,21 @@ function render(){
     if (rangeBonus > 0) tooltip += `• Volatility Range Expansion: +${rangeBonus} (${(s.range_expansion || 0).toFixed(1)}x ATR)\n`;
     if (candleBonus > 0) tooltip += `• Candle Pattern Direction: +${candleBonus}\n`;
     if (entryBonus > 0) tooltip += `• Low-Risk Support Entry: +${entryBonus}\n`;
+    if (rsBonus !== 0) tooltip += `• Relative Strength vs NIFTY: ${rsBonus > 0 ? '+' : ''}${rsBonus} (${(s.rs_pct || 0).toFixed(1)}%)\n`;
     if (extendPenalty < 0) tooltip += `• Parabolic Overextension Risk: ${extendPenalty} (${atrDist.toFixed(1)} ATRs from EMA)\n`;
     if (chasePenalty < 0) tooltip += `• High-Low Chasing Penalty: ${chasePenalty} (${pctVal.toFixed(1)}% above Low)\n`;
     tooltip = tooltip.trim();
+
+    // Confidence badge styling
+    let confBadge = '';
+    if (s.confidence === 'A+') confBadge = `<span class="c-bull" style="background:#064e3b;color:#a7f3d0;border:1px solid #047857">${s.confidence}</span>`;
+    else if (s.confidence === 'A') confBadge = `<span class="c-bull" style="background:#1e3a8a;color:#bfdbfe;border:1px solid #1d4ed8">${s.confidence}</span>`;
+    else if (s.confidence === 'B') confBadge = `<span class="neutral" style="background:#78350f;color:#fde68a;border:1px solid #d97706;padding:2px 8px;border-radius:4px;font-weight:600;font-size:10px">${s.confidence}</span>`;
+    else if (s.confidence === 'C') confBadge = `<span class="c-bear" style="background:#311005;color:#ffedd5;border:1px solid #9a3412">${s.confidence}</span>`;
+    else confBadge = `<span class="c-bear" style="background:#450a0a;color:#fca5a5;border:1px solid #7f1d1d">${s.confidence}</span>`;
+
+    const riskColor = s.risk_percentage > 4.0 ? 'dn' : s.risk_percentage > 3.0 ? 'd-warn' : 'up';
+    const rsColor = s.rs_pct > 0 ? 'up' : 'dn';
 
     return `<tr>
       <td>
@@ -1078,20 +1091,19 @@ function render(){
           <span>H</span>
         </div>
       </td>
+      <td><div style="text-align:center">${confBadge}</div><div style="font-size:9px;color:var(--muted);margin-top:4px;text-align:center">${s.signal_strength || ''}</div></td>
       <td><span class="score" style="cursor:help;" title="${tooltip}">${s.score}<span class="den">/100</span></span></td>
-      <td style="color:var(--muted)">${s.hv_date||'—'}</td>
-      <td class="${dClass}">${s.days}d</td>
-      <td>${fmt(s.hv_low)}</td>
-      <td>${fmt(s.hv_high)}</td>
       <td><div class="price-main">${fmt(s.price)}</div><div class="price-date">● ${s.scanned_date||'Today'}</div></td>
-      <td class="${pClass}">${pct(s.pct_above)}</td>
-      <td class="${s.upside<0?'dn':'up'}">${pct(s.upside)}</td>
-      <td class="neutral">1:${s.rr?s.rr.toFixed(1):'—'}</td>
+      <td>${fmt(s.entry)}</td>
+      <td class="sl">${fmt(s.stop_loss)}</td>
       <td class="cam-levels">
-        <div class="cam-h3">H3 ${fmt(s.target)}</div>
-        <div class="cam-pivot">P ${fmt(s.entry)}</div>
-        <div class="cam-l3">L3 ${fmt(s.stop_loss)}</div>
+        <div class="cam-h3" style="color:var(--teal)">T1 ${fmt(s.target)}</div>
+        <div class="cam-h3" style="color:var(--blue)">T2 ${fmt(s.target2 || 0)}</div>
       </td>
+      <td class="${riskColor}">${s.risk_percentage ? s.risk_percentage.toFixed(1) + '%' : '—'}</td>
+      <td class="neutral">1:${s.rr ? s.rr.toFixed(1) : '—'}</td>
+      <td class="${rsColor}">${s.rs_pct ? (s.rs_pct > 0 ? '+' : '') + s.rs_pct.toFixed(1) + '%' : '—'}</td>
+      <td class="neutral" style="font-weight:600">${s.turnover_score ? s.turnover_score.toFixed(1) + ' Cr' : '—'}</td>
       <td><div class="ema-dots">${eDots}</div></td>
       <td>
         <div class="vol-bar"><div class="vol-fill ${vClass}" style="width:${volPct}%"></div></div>
@@ -1158,6 +1170,7 @@ function startScan(){
   const params={
     vol_days: document.getElementById('volDays').value,
     vol_mult: document.getElementById('volMult').value,
+    turnover_limit: document.getElementById('turnoverLimit').value,
     scan_mode:document.getElementById('scanMode').value,
     ema10:  document.getElementById('c10').classList.contains('on'),
     ema20:  document.getElementById('c20').classList.contains('on'),
@@ -1266,7 +1279,6 @@ function detectColdStart(){
   const key='nse_last_visit';
   const now=Date.now();
   const last=parseInt(localStorage.getItem(key)||'0');
-  // Show banner if last visit was > 30 min ago (Render spins down after 15 min)
   if(!last || (now-last)>30*60*1000){
     document.getElementById('coldBanner').classList.add('show');
   }
