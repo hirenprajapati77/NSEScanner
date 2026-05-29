@@ -1,0 +1,24 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+
+# Databases
+scanner.db
+
+# Scanner Cache and Outputs
+data_cache/
+alert_history.json
+scan_status.json
+scan_*.csv
+
+# OS files
+.DS_Store
+Thumbs.db
