@@ -450,6 +450,33 @@ def compute_score(row: Dict, bearish: bool = False) -> int:
 # ─────────────────────────────────────────────────────────────
 CACHE_DIR = "data_cache"
 
+def normalize_dataframe(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Normalizes the DataFrame structure:
+    - Flattens MultiIndex columns to flat lowercase strings
+    - Converts Open, High, Low, Close, Volume to numeric float types
+    - Cleans up and discards string metadata rows (such as header rows loaded from corrupted cache)
+    """
+    if df is None or df.empty:
+        return df
+
+    # 1. Flatten MultiIndex columns if present
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = [c[0].lower() for c in df.columns]
+    else:
+        df.columns = [str(c).lower() for c in df.columns]
+
+    # 2. Convert OHLCV columns to numeric, coercing strings/errors to NaN
+    required = ["open", "high", "low", "close", "volume"]
+    for col in required:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    # 3. Drop rows that have NaN in critical columns (e.g. metadata text rows)
+    df.dropna(subset=required, inplace=True)
+    return df
+
+
 def _download(ticker: str, retries: int = 3) -> Optional[pd.DataFrame]:
     # Ensure cache directory exists
     if not os.path.exists(CACHE_DIR):
@@ -468,8 +495,10 @@ def _download(ticker: str, retries: int = 3) -> Optional[pd.DataFrame]:
             if time.time() - mtime < 3600:
                 df = pd.read_csv(cache_path, index_col=0, parse_dates=True)
                 if df is not None and not df.empty:
-                    log.debug(f"{ticker}: Loaded from local cache")
-                    return df
+                    df = normalize_dataframe(df)
+                    if df is not None and not df.empty:
+                        log.debug(f"{ticker}: Loaded from local cache")
+                        return df
         except Exception:
             pass
 
@@ -484,6 +513,7 @@ def _download(ticker: str, retries: int = 3) -> Optional[pd.DataFrame]:
                 timeout=30,
             )
             if df is not None and not df.empty:
+                df = normalize_dataframe(df)
                 # Save to cache
                 try:
                     df.to_csv(cache_path)
@@ -501,8 +531,10 @@ def _download(ticker: str, retries: int = 3) -> Optional[pd.DataFrame]:
                     try:
                         df = pd.read_csv(cache_path, index_col=0, parse_dates=True)
                         if df is not None and not df.empty:
-                            log.warning(f"{ticker}: Download failed; falling back to stale local cache")
-                            return df
+                            df = normalize_dataframe(df)
+                            if df is not None and not df.empty:
+                                log.warning(f"{ticker}: Download failed; falling back to stale local cache")
+                                return df
                     except Exception:
                         pass
                 log.debug(f"{ticker}: all {retries} download attempts failed — {exc}")
@@ -684,16 +716,15 @@ def analyse(
             regime = "Consolidation"
 
         # ── Critical Fix #3: Dynamic ATR Risk Engine ───
-        entry = cam["pivot"]
+        entry = close
         target1 = cam["H3"] if not bearish else cam["L3"]
         target2 = cam["H4"] if not bearish else cam["L4"]
 
-        # Minimum stop loss distance of 1.5 * ATR
+        # Volatility-adjusted 1.5 * ATR stop loss
+        stop_distance = 1.5 * last_atr
         if not bearish:
-            stop_distance = max(abs(entry - cam["L3"]), 1.5 * last_atr)
             stop_loss = round(entry - stop_distance, 2)
         else:
-            stop_distance = max(abs(cam["H3"] - entry), 1.5 * last_atr)
             stop_loss = round(entry + stop_distance, 2)
 
         risk = abs(entry - stop_loss)
@@ -914,8 +945,8 @@ def print_table(signals: List[Dict]) -> None:
         print(
             f"  {r['symbol']:<12} {r['score']:>3}/100 "
             f"{r['confidence']:>4} "
-            f"₹{r['price']:>9,.2f} ₹{r['entry']:>9,.2f} "
-            f"₹{r['target']:>9,.2f} ₹{r['stop_loss']:>9,.2f} "
+            f"Rs.{r['price']:>9,.2f} Rs.{r['entry']:>9,.2f} "
+            f"Rs.{r['target']:>9,.2f} Rs.{r['stop_loss']:>9,.2f} "
             f"{r['risk_percentage']:>5.1f}% {r['rr']:>4.1f} {r['turnover_score']:>7.1f}Cr {r['candle']}"
         )
     print("=" * 115)
