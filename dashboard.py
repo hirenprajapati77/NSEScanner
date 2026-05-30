@@ -630,15 +630,26 @@ body{font-family:var(--font);background:var(--bg0);color:var(--text);padding:16p
 .btn{background:#1d4ed8;color:#fff;border:none;padding:6px 16px;border-radius:6px;cursor:pointer;font-size:12px;font-weight:500;display:inline-flex;align-items:center;gap:6px;transition:background .2s}
 .btn:hover{background:#2563eb}
 .btn.scanning{background:#374151;cursor:not-allowed;opacity:.8}
-.btn-stop{background:#7f1d1d;color:#fca5a5;border:none;padding:6px 16px;border-radius:6px;cursor:pointer;font-size:12px;font-weight:500;display:none;align-items:center;gap:6px;transition:background .2s}
-.btn-stop.show{display:inline-flex}
-.btn-stop:hover{background:#991b1b}
+.btn-stop{background:#7f1d1d;color:#fca5a5;border:none;padding:6px 16px;border-radius:6px;cursor:pointer;font-size:12px;font-weight:500;display:inline-flex;align-items:center;gap:6px;transition:background .2s}
+.btn-stop:disabled{opacity:0.4;cursor:not-allowed;background:#1f2937;color:#6b7280;border:1px solid var(--border)}
+.btn-stop:hover:not(:disabled){background:#991b1b}
 
 /* Progress */
 .prog-wrap{display:none;padding:14px 20px;background:var(--bg2);border-bottom:1px solid var(--border);align-items:center;gap:14px;flex-wrap:wrap}
 .prog-wrap.show{display:flex}
 .prog-bar-bg{flex:1;min-width:200px;height:8px;background:var(--bg3);border-radius:99px;overflow:hidden}
 .prog-bar-fill{width:0%;height:100%;background:linear-gradient(90deg,#3b82f6,#60a5fa);border-radius:99px;transition:width .3s}
+@keyframes pulse-shimmer {
+  0% { opacity: 0.4; background-position: 0% 50%; }
+  50% { opacity: 1.0; background-position: 100% 50%; }
+  100% { opacity: 0.4; background-position: 0% 50%; }
+}
+.prog-bar-fill.waking {
+  width: 100% !important;
+  background: linear-gradient(270deg, #3b82f6, #60a5fa, #fbbf24, #3b82f6);
+  background-size: 800% 800%;
+  animation: pulse-shimmer 2s ease infinite;
+}
 .prog-txt{font-size:12px;color:var(--muted);font-weight:500}
 
 /* Summary bar */
@@ -724,6 +735,7 @@ td{padding:10px 14px;color:var(--text);white-space:nowrap;vertical-align:middle}
   .action-bar{flex-direction:column;align-items:stretch}
   .action-bar button{width:100%;justify-content:center}
   .modal{width:95% !important}
+  .m-hide{display:none !important}
 }
 </style>
 </head>
@@ -834,7 +846,7 @@ td{padding:10px 14px;color:var(--text);white-space:nowrap;vertical-align:middle}
     <button class="btn" id="scanBtn" onclick="startScan()">
       <i class="ti ti-scan-eye"></i> Run Live Scan
     </button>
-    <button class="btn-stop" id="stopBtn" onclick="stopScan()">
+    <button class="btn-stop" id="stopBtn" onclick="stopScan()" disabled>
       <i class="ti ti-player-stop"></i> Stop Scan
     </button>
     <label style="margin-left:8px"><i class="ti ti-refresh"></i> Auto:</label>
@@ -871,28 +883,28 @@ td{padding:10px 14px;color:var(--text);white-space:nowrap;vertical-align:middle}
   <div class="tbl-wrap">
     <table>
       <thead><tr>
-        <th onclick="sortBy('symbol')">SYMBOL &amp; 5d SPARKLINE <span class="sort-icon" id="si-symbol"><i class="ti ti-selector"></i></span></th>
-        <th onclick="sortBy('confidence')">CONF GRADE <span class="sort-icon" id="si-confidence"><i class="ti ti-selector"></i></span></th>
-        <th onclick="sortBy('score')">SCORE <span class="sort-icon" id="si-score"><i class="ti ti-selector"></i></span></th>
-        <th onclick="sortBy('price')">PRICE <span class="sort-icon" id="si-price"><i class="ti ti-selector"></i></span></th>
-        <th onclick="sortBy('entry')">ENTRY (PIVOT) <span class="sort-icon" id="si-entry"><i class="ti ti-selector"></i></span></th>
-        <th onclick="sortBy('stop_loss')">STOP LOSS <span class="sort-icon" id="si-stop_loss"><i class="ti ti-selector"></i></span></th>
-        <th>TARGETS (T1/T2)</th>
-        <th onclick="sortBy('risk_percentage')">RISK % <span class="sort-icon" id="si-risk_percentage"><i class="ti ti-selector"></i></span></th>
-        <th onclick="sortBy('rr')">R:R <span class="sort-icon" id="si-rr"><i class="ti ti-selector"></i></span></th>
-        <th onclick="sortBy('rs_pct')">RS VS NIFTY <span class="sort-icon" id="si-rs_pct"><i class="ti ti-selector"></i></span></th>
-        <th onclick="sortBy('days')">52W AGE <span class="sort-icon" id="si-days"><i class="ti ti-selector"></i></span></th>
-        <th onclick="sortBy('turnover_score')">TURNOVER <span class="sort-icon" id="si-turnover_score"><i class="ti ti-selector"></i></span></th>
-        <th>EMA ✓</th>
-        <th onclick="sortBy('vol_ratio')">VOL <span class="sort-icon" id="si-vol_ratio"><i class="ti ti-selector"></i></span></th>
-        <th onclick="sortBy('candle')">CANDLE <span class="sort-icon" id="si-candle"><i class="ti ti-selector"></i></span></th>
-        <th>WATCH</th>
+        <th onclick="sortBy('symbol')" title="Stock Ticker Symbol & 5-day Closing Price Sparkline">SYMBOL &amp; 5d SPARKLINE <span class="sort-icon" id="si-symbol"><i class="ti ti-selector"></i></span></th>
+        <th onclick="sortBy('confidence')" title="Confidence Grade (A+ to D) based on multi-factor momentum score">CONF GRADE <span class="sort-icon" id="si-confidence"><i class="ti ti-selector"></i></span></th>
+        <th onclick="sortBy('score')" title="Momentum Score (0-100) combining trend, volume, relative strength, and ATR range expansion">SCORE <span class="sort-icon" id="si-score"><i class="ti ti-selector"></i></span></th>
+        <th onclick="sortBy('price')" title="Last Traded Price & Scanned Timestamp">PRICE <span class="sort-icon" id="si-price"><i class="ti ti-selector"></i></span></th>
+        <th onclick="sortBy('entry')" title="Institutional Entry Zone based on Camarilla Daily Pivot level">ENTRY (PIVOT) <span class="sort-icon" id="si-entry"><i class="ti ti-selector"></i></span></th>
+        <th onclick="sortBy('stop_loss')" title="Volatility-adjusted stop-loss set at daily Camarilla L3 (Bullish) or H3 (Bearish)">STOP LOSS <span class="sort-icon" id="si-stop_loss"><i class="ti ti-selector"></i></span></th>
+        <th title="Camarilla H3 (Target 1) and H4 (Target 2) intraday breakout targets">TARGETS (T1/T2)</th>
+        <th onclick="sortBy('risk_percentage')" title="Capital at risk as a percentage of entry price (capped at 5.0% maximum)">RISK % <span class="sort-icon" id="si-risk_percentage"><i class="ti ti-selector"></i></span></th>
+        <th onclick="sortBy('rr')" title="Risk to Reward Ratio (minimum 1:1.5 required for validation)">R:R <span class="sort-icon" id="si-rr"><i class="ti ti-selector"></i></span></th>
+        <th onclick="sortBy('rs_pct')" class="m-hide" title="Outperformance / Underperformance percentage vs Nifty 50 Index (^NSEI)">RS VS NIFTY <span class="sort-icon" id="si-rs_pct"><i class="ti ti-selector"></i></span></th>
+        <th onclick="sortBy('days')" class="m-hide" title="Days elapsed since the stock hit its 52-week High/Low record">52W AGE <span class="sort-icon" id="si-days"><i class="ti ti-selector"></i></span></th>
+        <th onclick="sortBy('turnover_score')" class="m-hide" title="Average 20-day liquidity turnover in Crore INR (minimum ₹10 Cr required)">TURNOVER <span class="sort-icon" id="si-turnover_score"><i class="ti ti-selector"></i></span></th>
+        <th class="m-hide" title="Trend alignment indicators for 10, 20, 50, and 200 Exponential Moving Averages">EMA ✓</th>
+        <th onclick="sortBy('vol_ratio')" class="m-hide" title="Volume spike ratio compared to rolling N-day average volume (minimum 2.0x required)">VOL <span class="sort-icon" id="si-vol_ratio"><i class="ti ti-selector"></i></span></th>
+        <th onclick="sortBy('candle')" class="m-hide" title="Daily Candlestick Pattern Direction (Bull / Bear)">CANDLE <span class="sort-icon" id="si-candle"><i class="ti ti-selector"></i></span></th>
+        <th class="m-hide" title="Toggle Watchlist starred status">WATCH</th>
       </tr></thead>
       <tbody id="tblBody">
         <tr>
           <td colspan="16" class="empty-state">
             <i class="ti ti-chart-candlestick" style="font-size:32px;color:#374151;display:block;margin-bottom:8px"></i>
-            No signals loaded. Click <b>Run Live Scan</b> or search tickers above.
+            No results yet — configure filters and run a scan
           </td>
         </tr>
       </tbody>
@@ -1300,16 +1312,16 @@ function render(){
       </td>
       <td class="${riskColor}">${s.risk_percentage ? s.risk_percentage.toFixed(1) + '%' : '—'}</td>
       <td class="${rrColor}" style="font-weight:600">${s.rr ? s.rr.toFixed(1) + 'x' : '—'}</td>
-      <td class="${rsColor}">${s.rs_pct ? (s.rs_pct > 0 ? '+' : '') + s.rs_pct.toFixed(1) + '%' : '—'}</td>
-      <td style="color:${ageColor};font-weight:600">${ageLabel}</td>
-      <td class="neutral" style="font-weight:600">${s.turnover_score ? '₹' + s.turnover_score.toFixed(2) + ' Cr' : '—'}</td>
-      <td><div class="ema-dots">${eDots}</div></td>
-      <td>
+      <td class="${rsColor} m-hide">${s.rs_pct ? (s.rs_pct > 0 ? '+' : '') + s.rs_pct.toFixed(1) + '%' : '—'}</td>
+      <td class="m-hide" style="color:${ageColor};font-weight:600">${ageLabel}</td>
+      <td class="neutral m-hide" style="font-weight:600">${s.turnover_score ? '₹' + s.turnover_score.toFixed(2) + ' Cr' : '—'}</td>
+      <td class="m-hide"><div class="ema-dots">${eDots}</div></td>
+      <td class="m-hide">
         <div class="vol-bar"><div class="vol-fill" style="width:${volPct}%;background:${volColor}"></div></div>
         <br><span style="font-size:10px;color:var(--muted)">${s.vol_ratio.toFixed(2)}x</span>
       </td>
-      <td><span class="${s.candle==='Bull'?'c-bull':'c-bear'}">${s.candle}</span></td>
-      <td><i class="ti ti-star" style="font-size:16px;color:${isFav?'var(--yellow)':'#4b5563'};cursor:pointer;transition:color .2s"
+      <td class="m-hide"><span class="${s.candle==='Bull'?'c-bull':'c-bear'}">${s.candle}</span></td>
+      <td class="m-hide"><i class="ti ti-star" style="font-size:16px;color:${isFav?'var(--yellow)':'#4b5563'};cursor:pointer;transition:color .2s"
         onclick="toggleWatch('${s.symbol}',this)"></i></td>
     </tr>`;
   }).join('');
@@ -1324,12 +1336,14 @@ function setScanningUI(on){
   if(on){
     btn.classList.add('scanning'); btn.disabled=true;
     btn.innerHTML='<span class="ti ti-loader-quarter" style="animation:spin 1s linear infinite;display:inline-block"></span> Scanning…';
-    stop.classList.add('show'); prog.classList.add('show');
+    stop.removeAttribute('disabled');
+    prog.classList.add('show');
     document.getElementById('pageTitle').textContent='Scanning… | NSE Scanner';
   } else {
     btn.classList.remove('scanning'); btn.disabled=false;
     btn.innerHTML='<i class="ti ti-scan-eye"></i> Run Live Scan';
-    stop.classList.remove('show'); prog.classList.remove('show');
+    stop.setAttribute('disabled', 'true');
+    prog.classList.remove('show');
     document.getElementById('pageTitle').textContent='NSE Camarilla Volume Scanner';
   }
 }
@@ -1337,9 +1351,17 @@ function setScanningUI(on){
 function updateProgress(p){
   const tot=p.total||1, cur=p.current||0;
   const pctV=Math.round((cur/tot)*100);
-  document.getElementById('progFill').style.width=pctV+'%';
-  document.getElementById('progPct').textContent=pctV+'%';
-  document.getElementById('progStatus').textContent=`[${cur}/${tot}] ${p.ticker||''}`;
+  const fill=document.getElementById('progFill');
+  if (cur === 0) {
+    fill.classList.add('waking');
+    document.getElementById('progPct').textContent = 'Connecting…';
+    document.getElementById('progStatus').textContent = `[Waking Up] Render server is booting (Free tier)`;
+  } else {
+    fill.classList.remove('waking');
+    fill.style.width=pctV+'%';
+    document.getElementById('progPct').textContent=pctV+'%';
+    document.getElementById('progStatus').textContent=`[${cur}/${tot}] ${p.ticker||''}`;
+  }
   const eta=p.eta||0;
   document.getElementById('progETA').textContent=eta>0?`ETA: ${eta}s`:'';
 }
@@ -1600,6 +1622,9 @@ checkMarketStatus();
 marketTimer = setInterval(checkMarketStatus, 30000); // Check market operational state every 30s
 
 fetch('/results').then(r=>r.json()).then(d=>{
+  // Dismiss cold-start banner as soon as server responds
+  document.getElementById('coldBanner').classList.remove('show');
+  
   if(d.scanning){
     setScanningUI(true);
     pollTimer=setInterval(checkStatus,1500);
