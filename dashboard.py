@@ -737,9 +737,12 @@ td{padding:10px 14px;color:var(--text);white-space:nowrap;vertical-align:middle}
       <span class="nse">NSE</span>&nbsp;<span class="vol">Volume</span>&nbsp;Scanner
       <span class="ver">v3.0 [Phase 3 Polish]</span>
     </div>
-    <div class="live-badge">
+    <div class="live-badge" id="liveBadge">
       <span style="animation:pulse 1.5s infinite">●</span>
-      Live — <span id="bull-count">0</span> bullish &nbsp;|&nbsp; <span id="bear-count">0</span> bearish
+      <span id="liveBadgeText">Idle — Ready to Scan</span>
+      <span id="liveStatsSpan" style="display:none">
+        Live — <span id="bull-count">0</span> bullish &nbsp;|&nbsp; <span id="bear-count">0</span> bearish
+      </span>
     </div>
   </div>
 
@@ -885,7 +888,14 @@ td{padding:10px 14px;color:var(--text);white-space:nowrap;vertical-align:middle}
         <th onclick="sortBy('candle')">CANDLE <span class="sort-icon" id="si-candle"><i class="ti ti-selector"></i></span></th>
         <th>WATCH</th>
       </tr></thead>
-      <tbody id="tblBody"></tbody>
+      <tbody id="tblBody">
+        <tr>
+          <td colspan="16" class="empty-state">
+            <i class="ti ti-chart-candlestick" style="font-size:32px;color:#374151;display:block;margin-bottom:8px"></i>
+            No signals loaded. Click <b>Run Live Scan</b> or search tickers above.
+          </td>
+        </tr>
+      </tbody>
     </table>
   </div>
 
@@ -1085,8 +1095,19 @@ function updateCounts(){
     const el=document.getElementById('cnt-'+k);
     if(el) el.textContent=v;
   }
-  document.getElementById('bull-count').textContent=counts.bullish;
-  document.getElementById('bear-count').textContent=counts.bearish;
+  const statsSpan = document.getElementById('liveStatsSpan');
+  const badgeText = document.getElementById('liveBadgeText');
+  if (stocks.length === 0) {
+    if (badgeText) badgeText.style.display = 'inline';
+    if (statsSpan) statsSpan.style.display = 'none';
+  } else {
+    if (badgeText) badgeText.style.display = 'none';
+    if (statsSpan) statsSpan.style.display = 'inline';
+    const bullEl = document.getElementById('bull-count');
+    const bearEl = document.getElementById('bear-count');
+    if (bullEl) bullEl.textContent = counts.bullish;
+    if (bearEl) bearEl.textContent = counts.bearish;
+  }
 }
 
 // ── Main render ───────────────────────────────────────────
@@ -1123,6 +1144,20 @@ function render(){
     <div class="si"><span class="lbl">Bearish:</span><span class="val r">${bears}</span></div>
     <div class="si"><span class="lbl">Vol ≥3x:</span><span class="val y">${hi3}</span></div>
     <div class="si"><span class="lbl">Avg score:</span><span class="val">${avg}/100</span></div>`;
+
+  // CSV Button State
+  const csvBtn = document.querySelector('.csv-btn');
+  if (csvBtn) {
+    if (stocks.length === 0) {
+      csvBtn.style.opacity = '0.5';
+      csvBtn.style.cursor = 'not-allowed';
+      csvBtn.setAttribute('title', 'No signals to export');
+    } else {
+      csvBtn.style.opacity = '1';
+      csvBtn.style.cursor = 'pointer';
+      csvBtn.removeAttribute('title');
+    }
+  }
 
   if(!f.length){
     tbody.innerHTML=`<tr><td colspan="16" class="empty-state">
@@ -1426,6 +1461,10 @@ function stopScan(){
 }
 
 function exportCSV(){
+  if (stocks.length === 0) {
+    showToast('No signals available to export.', true);
+    return;
+  }
   window.location.href='/export';
 }
 
