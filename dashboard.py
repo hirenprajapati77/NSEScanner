@@ -237,6 +237,7 @@ def _do_scan(params: dict, scan_id: str) -> None:
         "TWILIO_TOKEN":   params.get("twilio_token", _load_config().get("twilio_token","")),
         "TWILIO_TO":      params.get("twilio_to",    _load_config().get("twilio_to",   "")),
         "TURNOVER_LIMIT": float(params.get("turnover_limit", CFG["TURNOVER_LIMIT"])),
+        "USE_CACHE_ONLY": bool(params.get("use_cache", False)),
     }
 
     scan_mode = params.get("scan_mode", "bullish")   # bullish | bearish | both
@@ -362,6 +363,7 @@ def scan_single():
         "EMA_50":         bool(data.get("ema50", True)),
         "EMA_200":        bool(data.get("ema200", True)),
         "TURNOVER_LIMIT": float(data.get("turnover_limit", CFG["TURNOVER_LIMIT"])),
+        "USE_CACHE_ONLY": bool(data.get("use_cache", False)),
     }
 
     # Attempt to scan for Bullish first
@@ -628,15 +630,26 @@ body{font-family:var(--font);background:var(--bg0);color:var(--text);padding:16p
 .btn{background:#1d4ed8;color:#fff;border:none;padding:6px 16px;border-radius:6px;cursor:pointer;font-size:12px;font-weight:500;display:inline-flex;align-items:center;gap:6px;transition:background .2s}
 .btn:hover{background:#2563eb}
 .btn.scanning{background:#374151;cursor:not-allowed;opacity:.8}
-.btn-stop{background:#7f1d1d;color:#fca5a5;border:none;padding:6px 16px;border-radius:6px;cursor:pointer;font-size:12px;font-weight:500;display:none;align-items:center;gap:6px;transition:background .2s}
-.btn-stop.show{display:inline-flex}
-.btn-stop:hover{background:#991b1b}
+.btn-stop{background:#7f1d1d;color:#fca5a5;border:none;padding:6px 16px;border-radius:6px;cursor:pointer;font-size:12px;font-weight:500;display:inline-flex;align-items:center;gap:6px;transition:background .2s}
+.btn-stop:disabled{opacity:0.4;cursor:not-allowed;background:#1f2937;color:#6b7280;border:1px solid var(--border)}
+.btn-stop:hover:not(:disabled){background:#991b1b}
 
 /* Progress */
 .prog-wrap{display:none;padding:14px 20px;background:var(--bg2);border-bottom:1px solid var(--border);align-items:center;gap:14px;flex-wrap:wrap}
 .prog-wrap.show{display:flex}
 .prog-bar-bg{flex:1;min-width:200px;height:8px;background:var(--bg3);border-radius:99px;overflow:hidden}
 .prog-bar-fill{width:0%;height:100%;background:linear-gradient(90deg,#3b82f6,#60a5fa);border-radius:99px;transition:width .3s}
+@keyframes pulse-shimmer {
+  0% { opacity: 0.4; background-position: 0% 50%; }
+  50% { opacity: 1.0; background-position: 100% 50%; }
+  100% { opacity: 0.4; background-position: 0% 50%; }
+}
+.prog-bar-fill.waking {
+  width: 100% !important;
+  background: linear-gradient(270deg, #3b82f6, #60a5fa, #fbbf24, #3b82f6);
+  background-size: 800% 800%;
+  animation: pulse-shimmer 2s ease infinite;
+}
 .prog-txt{font-size:12px;color:var(--muted);font-weight:500}
 
 /* Summary bar */
@@ -722,6 +735,7 @@ td{padding:10px 14px;color:var(--text);white-space:nowrap;vertical-align:middle}
   .action-bar{flex-direction:column;align-items:stretch}
   .action-bar button{width:100%;justify-content:center}
   .modal{width:95% !important}
+  .m-hide{display:none !important}
 }
 </style>
 </head>
@@ -735,9 +749,12 @@ td{padding:10px 14px;color:var(--text);white-space:nowrap;vertical-align:middle}
       <span class="nse">NSE</span>&nbsp;<span class="vol">Volume</span>&nbsp;Scanner
       <span class="ver">v3.0 [Phase 3 Polish]</span>
     </div>
-    <div class="live-badge">
+    <div class="live-badge" id="liveBadge">
       <span style="animation:pulse 1.5s infinite">●</span>
-      Live — <span id="bull-count">0</span> bullish &nbsp;|&nbsp; <span id="bear-count">0</span> bearish
+      <span id="liveBadgeText">Idle — Ready to Scan</span>
+      <span id="liveStatsSpan" style="display:none">
+        Live — <span id="bull-count">0</span> bullish &nbsp;|&nbsp; <span id="bear-count">0</span> bearish
+      </span>
     </div>
   </div>
 
@@ -829,7 +846,7 @@ td{padding:10px 14px;color:var(--text);white-space:nowrap;vertical-align:middle}
     <button class="btn" id="scanBtn" onclick="startScan()">
       <i class="ti ti-scan-eye"></i> Run Live Scan
     </button>
-    <button class="btn-stop" id="stopBtn" onclick="stopScan()">
+    <button class="btn-stop" id="stopBtn" onclick="stopScan()" disabled>
       <i class="ti ti-player-stop"></i> Stop Scan
     </button>
     <label style="margin-left:8px"><i class="ti ti-refresh"></i> Auto:</label>
@@ -838,6 +855,11 @@ td{padding:10px 14px;color:var(--text);white-space:nowrap;vertical-align:middle}
       <option value="180000">3 min</option>
       <option value="300000">5 min</option>
       <option value="600000">10 min</option>
+    </select>
+    <label style="margin-left:8px"><i class="ti ti-database-off"></i> Mode:</label>
+    <select id="scanDataSource" onchange="savePrefs()">
+      <option value="live" selected>Live yfinance</option>
+      <option value="offline">Cache (Offline)</option>
     </select>
     <span id="countdownSpan" style="margin-left:5px;color:var(--yellow);font-weight:600;font-size:11px"></span>
     <input type="text" id="tickerSearch" placeholder="🔍 Search/Scan ticker…"
@@ -861,24 +883,31 @@ td{padding:10px 14px;color:var(--text);white-space:nowrap;vertical-align:middle}
   <div class="tbl-wrap">
     <table>
       <thead><tr>
-        <th onclick="sortBy('symbol')">SYMBOL &amp; 5d SPARKLINE <span class="sort-icon" id="si-symbol"><i class="ti ti-selector"></i></span></th>
-        <th onclick="sortBy('confidence')">CONF GRADE <span class="sort-icon" id="si-confidence"><i class="ti ti-selector"></i></span></th>
-        <th onclick="sortBy('score')">SCORE <span class="sort-icon" id="si-score"><i class="ti ti-selector"></i></span></th>
-        <th onclick="sortBy('price')">PRICE <span class="sort-icon" id="si-price"><i class="ti ti-selector"></i></span></th>
-        <th onclick="sortBy('entry')">ENTRY (PIVOT) <span class="sort-icon" id="si-entry"><i class="ti ti-selector"></i></span></th>
-        <th onclick="sortBy('stop_loss')">STOP LOSS <span class="sort-icon" id="si-stop_loss"><i class="ti ti-selector"></i></span></th>
-        <th>TARGETS (T1/T2)</th>
-        <th onclick="sortBy('risk_percentage')">RISK % <span class="sort-icon" id="si-risk_percentage"><i class="ti ti-selector"></i></span></th>
-        <th onclick="sortBy('rr')">R:R <span class="sort-icon" id="si-rr"><i class="ti ti-selector"></i></span></th>
-        <th onclick="sortBy('rs_pct')">RS VS NIFTY <span class="sort-icon" id="si-rs_pct"><i class="ti ti-selector"></i></span></th>
-        <th onclick="sortBy('days')">52W AGE <span class="sort-icon" id="si-days"><i class="ti ti-selector"></i></span></th>
-        <th onclick="sortBy('turnover_score')">TURNOVER <span class="sort-icon" id="si-turnover_score"><i class="ti ti-selector"></i></span></th>
-        <th>EMA ✓</th>
-        <th onclick="sortBy('vol_ratio')">VOL <span class="sort-icon" id="si-vol_ratio"><i class="ti ti-selector"></i></span></th>
-        <th onclick="sortBy('candle')">CANDLE <span class="sort-icon" id="si-candle"><i class="ti ti-selector"></i></span></th>
-        <th>WATCH</th>
+        <th onclick="sortBy('symbol')" title="Stock Ticker Symbol & 5-day Closing Price Sparkline">SYMBOL &amp; 5d SPARKLINE <span class="sort-icon" id="si-symbol"><i class="ti ti-selector"></i></span></th>
+        <th onclick="sortBy('confidence')" title="Confidence Grade (A+ to D) based on multi-factor momentum score">CONF GRADE <span class="sort-icon" id="si-confidence"><i class="ti ti-selector"></i></span></th>
+        <th onclick="sortBy('score')" title="Momentum Score (0-100) combining trend, volume, relative strength, and ATR range expansion">SCORE <span class="sort-icon" id="si-score"><i class="ti ti-selector"></i></span></th>
+        <th onclick="sortBy('price')" title="Last Traded Price & Scanned Timestamp">PRICE <span class="sort-icon" id="si-price"><i class="ti ti-selector"></i></span></th>
+        <th onclick="sortBy('entry')" title="Institutional Entry Zone based on Camarilla Daily Pivot level">ENTRY (PIVOT) <span class="sort-icon" id="si-entry"><i class="ti ti-selector"></i></span></th>
+        <th onclick="sortBy('stop_loss')" title="Volatility-adjusted stop-loss set at daily Camarilla L3 (Bullish) or H3 (Bearish)">STOP LOSS <span class="sort-icon" id="si-stop_loss"><i class="ti ti-selector"></i></span></th>
+        <th title="Camarilla H3 (Target 1) and H4 (Target 2) intraday breakout targets">TARGETS (T1/T2)</th>
+        <th onclick="sortBy('risk_percentage')" title="Capital at risk as a percentage of entry price (capped at 5.0% maximum)">RISK % <span class="sort-icon" id="si-risk_percentage"><i class="ti ti-selector"></i></span></th>
+        <th onclick="sortBy('rr')" title="Risk to Reward Ratio (minimum 1:1.5 required for validation)">R:R <span class="sort-icon" id="si-rr"><i class="ti ti-selector"></i></span></th>
+        <th onclick="sortBy('rs_pct')" class="m-hide" title="Outperformance / Underperformance percentage vs Nifty 50 Index (^NSEI)">RS VS NIFTY <span class="sort-icon" id="si-rs_pct"><i class="ti ti-selector"></i></span></th>
+        <th onclick="sortBy('days')" class="m-hide" title="Days elapsed since the stock hit its 52-week High/Low record">52W AGE <span class="sort-icon" id="si-days"><i class="ti ti-selector"></i></span></th>
+        <th onclick="sortBy('turnover_score')" class="m-hide" title="Average 20-day liquidity turnover in Crore INR (minimum ₹10 Cr required)">TURNOVER <span class="sort-icon" id="si-turnover_score"><i class="ti ti-selector"></i></span></th>
+        <th class="m-hide" title="Trend alignment indicators for 10, 20, 50, and 200 Exponential Moving Averages">EMA ✓</th>
+        <th onclick="sortBy('vol_ratio')" class="m-hide" title="Volume spike ratio compared to rolling N-day average volume (minimum 2.0x required)">VOL <span class="sort-icon" id="si-vol_ratio"><i class="ti ti-selector"></i></span></th>
+        <th onclick="sortBy('candle')" class="m-hide" title="Daily Candlestick Pattern Direction (Bull / Bear)">CANDLE <span class="sort-icon" id="si-candle"><i class="ti ti-selector"></i></span></th>
+        <th class="m-hide" title="Toggle Watchlist starred status">WATCH</th>
       </tr></thead>
-      <tbody id="tblBody"></tbody>
+      <tbody id="tblBody">
+        <tr>
+          <td colspan="16" class="empty-state">
+            <i class="ti ti-chart-candlestick" style="font-size:32px;color:#374151;display:block;margin-bottom:8px"></i>
+            No results yet — configure filters and run a scan
+          </td>
+        </tr>
+      </tbody>
     </table>
   </div>
 
@@ -981,6 +1010,7 @@ function savePrefs(){
       volMult: document.getElementById('volMult').value,
       turnoverLimit: document.getElementById('turnoverLimit').value,
       scanMode:document.getElementById('scanMode').value,
+      scanDataSource: document.getElementById('scanDataSource').value,
       ema10: emaReq[10], ema20:emaReq[20], ema50:emaReq[50], ema200:emaReq[200],
     }));
   }catch(e){}
@@ -992,6 +1022,7 @@ function loadPrefs(){
     if(p.volMult) document.getElementById('volMult').value=p.volMult;
     if(p.turnoverLimit) document.getElementById('turnoverLimit').value=p.turnoverLimit;
     if(p.scanMode) document.getElementById('scanMode').value=p.scanMode;
+    if(p.scanDataSource) document.getElementById('scanDataSource').value=p.scanDataSource;
     [10,20,50,200].forEach(n=>{
       const v = p['ema'+n];
       if(v!==undefined){
@@ -1076,8 +1107,19 @@ function updateCounts(){
     const el=document.getElementById('cnt-'+k);
     if(el) el.textContent=v;
   }
-  document.getElementById('bull-count').textContent=counts.bullish;
-  document.getElementById('bear-count').textContent=counts.bearish;
+  const statsSpan = document.getElementById('liveStatsSpan');
+  const badgeText = document.getElementById('liveBadgeText');
+  if (stocks.length === 0) {
+    if (badgeText) badgeText.style.display = 'inline';
+    if (statsSpan) statsSpan.style.display = 'none';
+  } else {
+    if (badgeText) badgeText.style.display = 'none';
+    if (statsSpan) statsSpan.style.display = 'inline';
+    const bullEl = document.getElementById('bull-count');
+    const bearEl = document.getElementById('bear-count');
+    if (bullEl) bullEl.textContent = counts.bullish;
+    if (bearEl) bearEl.textContent = counts.bearish;
+  }
 }
 
 // ── Main render ───────────────────────────────────────────
@@ -1114,6 +1156,20 @@ function render(){
     <div class="si"><span class="lbl">Bearish:</span><span class="val r">${bears}</span></div>
     <div class="si"><span class="lbl">Vol ≥3x:</span><span class="val y">${hi3}</span></div>
     <div class="si"><span class="lbl">Avg score:</span><span class="val">${avg}/100</span></div>`;
+
+  // CSV Button State
+  const csvBtn = document.querySelector('.csv-btn');
+  if (csvBtn) {
+    if (stocks.length === 0) {
+      csvBtn.style.opacity = '0.5';
+      csvBtn.style.cursor = 'not-allowed';
+      csvBtn.setAttribute('title', 'No signals to export');
+    } else {
+      csvBtn.style.opacity = '1';
+      csvBtn.style.cursor = 'pointer';
+      csvBtn.removeAttribute('title');
+    }
+  }
 
   if(!f.length){
     tbody.innerHTML=`<tr><td colspan="16" class="empty-state">
@@ -1224,6 +1280,7 @@ function render(){
     const riskColor = s.risk_percentage > 4.0 ? 'dn' : s.risk_percentage > 3.0 ? 'd-warn' : 'up';
     const rrColor = s.rr >= 3.0 ? 'up' : s.rr >= 1.5 ? 'd-warn' : 'dn';
     const rsColor = s.rs_pct > 0 ? 'up' : 'dn';
+    const volColor = s.vol_ratio >= 3.0 ? '#f87171' : s.vol_ratio >= 2.0 ? '#fbbf24' : '#4ade80';
 
     return `<tr>
       <td>
@@ -1255,16 +1312,16 @@ function render(){
       </td>
       <td class="${riskColor}">${s.risk_percentage ? s.risk_percentage.toFixed(1) + '%' : '—'}</td>
       <td class="${rrColor}" style="font-weight:600">${s.rr ? s.rr.toFixed(1) + 'x' : '—'}</td>
-      <td class="${rsColor}">${s.rs_pct ? (s.rs_pct > 0 ? '+' : '') + s.rs_pct.toFixed(1) + '%' : '—'}</td>
-      <td style="color:${ageColor};font-weight:600">${ageLabel}</td>
-      <td class="neutral" style="font-weight:600">${s.turnover_score ? '₹' + s.turnover_score.toFixed(2) + ' Cr' : '—'}</td>
-      <td><div class="ema-dots">${eDots}</div></td>
-      <td>
-        <div class="vol-bar"><div class="vol-fill ${vClass}" style="width:${volPct}%"></div></div>
+      <td class="${rsColor} m-hide">${s.rs_pct ? (s.rs_pct > 0 ? '+' : '') + s.rs_pct.toFixed(1) + '%' : '—'}</td>
+      <td class="m-hide" style="color:${ageColor};font-weight:600">${ageLabel}</td>
+      <td class="neutral m-hide" style="font-weight:600">${s.turnover_score ? '₹' + s.turnover_score.toFixed(2) + ' Cr' : '—'}</td>
+      <td class="m-hide"><div class="ema-dots">${eDots}</div></td>
+      <td class="m-hide">
+        <div class="vol-bar"><div class="vol-fill" style="width:${volPct}%;background:${volColor}"></div></div>
         <br><span style="font-size:10px;color:var(--muted)">${s.vol_ratio.toFixed(2)}x</span>
       </td>
-      <td><span class="${s.candle==='Bull'?'c-bull':'c-bear'}">${s.candle}</span></td>
-      <td><i class="ti ti-star" style="font-size:16px;color:${isFav?'var(--yellow)':'#4b5563'};cursor:pointer;transition:color .2s"
+      <td class="m-hide"><span class="${s.candle==='Bull'?'c-bull':'c-bear'}">${s.candle}</span></td>
+      <td class="m-hide"><i class="ti ti-star" style="font-size:16px;color:${isFav?'var(--yellow)':'#4b5563'};cursor:pointer;transition:color .2s"
         onclick="toggleWatch('${s.symbol}',this)"></i></td>
     </tr>`;
   }).join('');
@@ -1279,12 +1336,14 @@ function setScanningUI(on){
   if(on){
     btn.classList.add('scanning'); btn.disabled=true;
     btn.innerHTML='<span class="ti ti-loader-quarter" style="animation:spin 1s linear infinite;display:inline-block"></span> Scanning…';
-    stop.classList.add('show'); prog.classList.add('show');
+    stop.removeAttribute('disabled');
+    prog.classList.add('show');
     document.getElementById('pageTitle').textContent='Scanning… | NSE Scanner';
   } else {
     btn.classList.remove('scanning'); btn.disabled=false;
     btn.innerHTML='<i class="ti ti-scan-eye"></i> Run Live Scan';
-    stop.classList.remove('show'); prog.classList.remove('show');
+    stop.setAttribute('disabled', 'true');
+    prog.classList.remove('show');
     document.getElementById('pageTitle').textContent='NSE Camarilla Volume Scanner';
   }
 }
@@ -1292,9 +1351,17 @@ function setScanningUI(on){
 function updateProgress(p){
   const tot=p.total||1, cur=p.current||0;
   const pctV=Math.round((cur/tot)*100);
-  document.getElementById('progFill').style.width=pctV+'%';
-  document.getElementById('progPct').textContent=pctV+'%';
-  document.getElementById('progStatus').textContent=`[${cur}/${tot}] ${p.ticker||''}`;
+  const fill=document.getElementById('progFill');
+  if (cur === 0) {
+    fill.classList.add('waking');
+    document.getElementById('progPct').textContent = 'Connecting…';
+    document.getElementById('progStatus').textContent = `[Waking Up] Render server is booting (Free tier)`;
+  } else {
+    fill.classList.remove('waking');
+    fill.style.width=pctV+'%';
+    document.getElementById('progPct').textContent=pctV+'%';
+    document.getElementById('progStatus').textContent=`[${cur}/${tot}] ${p.ticker||''}`;
+  }
   const eta=p.eta||0;
   document.getElementById('progETA').textContent=eta>0?`ETA: ${eta}s`:'';
 }
@@ -1317,7 +1384,21 @@ function checkStatus(){
       if(d.signals){
         stocks=preprocess(d.signals);
         document.getElementById('lastScan').textContent=d.last_scan?'Last scan: '+d.last_scan:'';
-        updateCounts(); render();
+        updateCounts(); 
+        
+        // Auto-switch from 'entry' if empty to prevent a confusing blank list
+        if (activeTab === 'entry' && parseInt(document.getElementById('cnt-entry').textContent) === 0) {
+          const tabPriority = ['bullish', 'mixed', 'bearish', 'hv', 'camarilla'];
+          for (const tab of tabPriority) {
+            const cnt = parseInt(document.getElementById('cnt-' + tab).textContent || '0');
+            if (cnt > 0) {
+              setTab(tab);
+              break;
+            }
+          }
+        } else {
+          render();
+        }
       }
       if(d.error&&d.error!=='Scan cancelled'&&d.error!=='Scan stopped by user'){
         showToast('Error: '+d.error, true);
@@ -1333,6 +1414,7 @@ function startScan(){
     vol_mult: document.getElementById('volMult').value,
     turnover_limit: document.getElementById('turnoverLimit').value,
     scan_mode:document.getElementById('scanMode').value,
+    use_cache: document.getElementById('scanDataSource').value === 'offline',
     ema10:  document.getElementById('c10').classList.contains('on'),
     ema20:  document.getElementById('c20').classList.contains('on'),
     ema50:  document.getElementById('c50').classList.contains('on'),
@@ -1363,6 +1445,7 @@ function triggerSingleScan(){
     vol_days: document.getElementById('volDays').value,
     vol_mult: document.getElementById('volMult').value,
     turnover_limit: document.getElementById('turnoverLimit').value,
+    use_cache: document.getElementById('scanDataSource').value === 'offline',
     ema10:  document.getElementById('c10').classList.contains('on'),
     ema20:  document.getElementById('c20').classList.contains('on'),
     ema50:  document.getElementById('c50').classList.contains('on'),
@@ -1400,6 +1483,10 @@ function stopScan(){
 }
 
 function exportCSV(){
+  if (stocks.length === 0) {
+    showToast('No signals available to export.', true);
+    return;
+  }
   window.location.href='/export';
 }
 
@@ -1535,13 +1622,30 @@ checkMarketStatus();
 marketTimer = setInterval(checkMarketStatus, 30000); // Check market operational state every 30s
 
 fetch('/results').then(r=>r.json()).then(d=>{
+  // Dismiss cold-start banner as soon as server responds
+  document.getElementById('coldBanner').classList.remove('show');
+  
   if(d.scanning){
     setScanningUI(true);
     pollTimer=setInterval(checkStatus,1500);
   } else if(d.signals&&d.signals.length>0){
     stocks=preprocess(d.signals);
     document.getElementById('lastScan').textContent=d.last_scan?'Last scan: '+d.last_scan:'';
-    updateCounts(); render();
+    updateCounts();
+    
+    // Auto-switch from 'entry' if empty to prevent a confusing blank list on page load
+    if (activeTab === 'entry' && parseInt(document.getElementById('cnt-entry').textContent) === 0) {
+      const tabPriority = ['bullish', 'mixed', 'bearish', 'hv', 'camarilla'];
+      for (const tab of tabPriority) {
+        const cnt = parseInt(document.getElementById('cnt-' + tab).textContent || '0');
+        if (cnt > 0) {
+          setTab(tab);
+          break;
+        }
+      }
+    } else {
+      render();
+    }
   }
 });
 </script>

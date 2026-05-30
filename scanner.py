@@ -74,6 +74,7 @@ CFG: Dict = {
     "INTERVAL":       int(os.getenv("SCAN_INTERVAL",  "300")),
     # Liquidity Filter (10 Crore INR default: 1 Crore = 10,000,000)
     "TURNOVER_LIMIT": float(os.getenv("TURNOVER_LIMIT", "100000000")),
+    "USE_CACHE_ONLY": False,
 }
 
 
@@ -178,47 +179,64 @@ init_db()
 # NSE STOCK UNIVERSE  (~120 Nifty-500 stocks)
 # ─────────────────────────────────────────────────────────────
 NIFTY500_SAMPLE: List[str] = [
-    "RELIANCE.NS","TCS.NS","HDFCBANK.NS","INFY.NS","ICICIBANK.NS",
-    "HINDUNILVR.NS","ITC.NS","SBIN.NS","BHARTIARTL.NS","KOTAKBANK.NS",
-    "LT.NS","AXISBANK.NS","ASIANPAINT.NS","MARUTI.NS","SUNPHARMA.NS",
-    "TITAN.NS","BAJFINANCE.NS","WIPRO.NS","NESTLEIND.NS","ULTRACEMCO.NS",
-    "APOLLOHOSP.NS","TECHM.NS","HCLTECH.NS","POWERGRID.NS","NTPC.NS",
-    "TATAMOTORS.NS","ONGC.NS","JSWSTEEL.NS","TATASTEEL.NS","BAJAJFINSV.NS",
-    "DIVISLAB.NS","DRREDDY.NS","CIPLA.NS","EICHERMOT.NS","HEROMOTOCO.NS",
-    "GRASIM.NS","BPCL.NS","COALINDIA.NS","INDUSINDBK.NS","ADANIPORTS.NS",
-    "DABUR.NS","MARICO.NS","PIDILITIND.NS","BERGEPAINT.NS","HAVELLS.NS",
-    "TATACONSUM.NS","GODREJCP.NS","MUTHOOTFIN.NS","CHOLAFIN.NS","SRF.NS",
-    "AARTIIND.NS","ABCAPITAL.NS","ACC.NS","AIAENG.NS","ALKEM.NS",
-    "AMBUJACEM.NS","APLLTD.NS","AUBANK.NS","BALKRISIND.NS","BANDHANBNK.NS",
-    "BEL.NS","BHARATFORG.NS","BIOCON.NS","CANBK.NS","CESC.NS",
-    "CROMPTON.NS","CUB.NS","DEEPAKNTR.NS","ESCORTS.NS",
-    "FEDERALBNK.NS","GAIL.NS","GMRINFRA.NS","GNFC.NS","GODREJPROP.NS",
-    "GRANULES.NS","GSPL.NS","HAPPSTMNDS.NS","HINDPETRO.NS","HINDCOPPER.NS",
-    "IDFCFIRSTB.NS","IEX.NS","IPCALAB.NS","IRCTC.NS",
-    "JINDALSTEL.NS","JUBLFOOD.NS","KANSAINER.NS","LALPATHLAB.NS","LTIM.NS",
-    "LUPIN.NS","M&M.NS","MANAPPURAM.NS","MFSL.NS",
-    "MOTHERSON.NS","MPHASIS.NS","MRF.NS","NMDC.NS","OBEROIRLTY.NS",
-    "OFSS.NS","PAGEIND.NS","PERSISTENT.NS","PETRONET.NS",
-    "PFC.NS","RAMCOCEM.NS","RBLBANK.NS",
-    "RECLTD.NS","SAIL.NS","SHREECEM.NS","SIEMENS.NS",
-    "SUPREMEIND.NS","SYNGENE.NS","TORNTPHARM.NS",
-    "TRENT.NS","UBL.NS","VEDL.NS","VOLTAS.NS",
-    "ZOMATO.NS","ZYDUSLIFE.NS",
-    # Additional F&O names
-    "ADANIENT.NS","ADANIGREEN.NS","ADANITRANS.NS","ATGL.NS",
-    "BAJAJ-AUTO.NS","BALKRISIND.NS","CAMS.NS","CANFINHOME.NS",
-    "CONCOR.NS","COROMANDEL.NS","DALBHARAT.NS","DIXON.NS",
-    "GLENMARK.NS","HAL.NS","ICICIGI.NS","ICICIPRULI.NS",
-    "IDEA.NS","INDHOTEL.NS","INDUSTOWER.NS","INOXWIND.NS",
-    "IOC.NS","ISEC.NS","JKCEMENT.NS","JUBILANT.NS",
-    "KAJARIACER.NS","LAURUSLABS.NS","LICHSGFIN.NS","LINDEINDIA.NS",
-    "MCX.NS","METROPOLIS.NS","MINDA.NS","NAUKRI.NS",
-    "NAVINFLUOR.NS","PIIND.NS","POLYCAB.NS","RELAXO.NS","ROUTE.NS",
-    "SBICARD.NS","SBILIFE.NS","SCHAEFFLER.NS","SOLARINDS.NS",
-    "SUNPHARMA.NS","SUNTV.NS","TATACHEM.NS","TATACOMM.NS",
-    "TATAELXSI.NS","TATAINVEST.NS","TIINDIA.NS","TTKPRESTIG.NS",
-    "VGUARD.NS","WHIRLPOOL.NS","ZEEL.NS",
+    # NIFTY 50 & Large Caps
+    "RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "INFY.NS", "ICICIBANK.NS",
+    "HINDUNILVR.NS", "ITC.NS", "SBIN.NS", "BHARTIARTL.NS", "KOTAKBANK.NS",
+    "LT.NS", "AXISBANK.NS", "ASIANPAINT.NS", "MARUTI.NS", "SUNPHARMA.NS",
+    "TITAN.NS", "BAJFINANCE.NS", "WIPRO.NS", "NESTLEIND.NS", "ULTRACEMCO.NS",
+    "APOLLOHOSP.NS", "TECHM.NS", "HCLTECH.NS", "POWERGRID.NS", "NTPC.NS",
+    "TATAMOTORS.NS", "ONGC.NS", "JSWSTEEL.NS", "TATASTEEL.NS", "BAJAJFINSV.NS",
+    "DIVISLAB.NS", "DRREDDY.NS", "CIPLA.NS", "EICHERMOT.NS", "HEROMOTOCO.NS",
+    "GRASIM.NS", "BPCL.NS", "COALINDIA.NS", "INDUSINDBK.NS", "ADANIPORTS.NS",
+    "DABUR.NS", "MARICO.NS", "PIDILITIND.NS", "BERGEPAINT.NS", "HAVELLS.NS",
+    "TATACONSUM.NS", "GODREJCP.NS", "MUTHOOTFIN.NS", "CHOLAFIN.NS", "SRF.NS",
+    "AARTIIND.NS", "ABCAPITAL.NS", "ACC.NS", "AIAENG.NS", "ALKEM.NS",
+    "AMBUJACEM.NS", "APLLTD.NS", "AUBANK.NS", "BALKRISIND.NS", "BANDHANBNK.NS",
+    "BEL.NS", "BHARATFORG.NS", "BIOCON.NS", "CANBK.NS", "CESC.NS",
+    "CROMPTON.NS", "CUB.NS", "DEEPAKNTR.NS", "ESCORTS.NS",
+    "FEDERALBNK.NS", "GAIL.NS", "GMRINFRA.NS", "GNFC.NS", "GODREJPROP.NS",
+    "GRANULES.NS", "GSPL.NS", "HAPPSTMNDS.NS", "HINDPETRO.NS", "HINDCOPPER.NS",
+    "IDFCFIRSTB.NS", "IEX.NS", "IPCALAB.NS", "IRCTC.NS",
+    "JINDALSTEL.NS", "JUBLFOOD.NS", "KANSAINER.NS", "LALPATHLAB.NS", "LTIM.NS",
+    "LUPIN.NS", "M&M.NS", "MANAPPURAM.NS", "MFSL.NS",
+    "MOTHERSON.NS", "MPHASIS.NS", "MRF.NS", "NMDC.NS", "OBEROIRLTY.NS",
+    "OFSS.NS", "PAGEIND.NS", "PERSISTENT.NS", "PETRONET.NS",
+    "PFC.NS", "RAMCOCEM.NS", "RBLBANK.NS",
+    "RECLTD.NS", "SAIL.NS", "SHREECEM.NS", "SIEMENS.NS",
+    "SUPREMEIND.NS", "SYNGENE.NS", "TORNTPHARM.NS",
+    "TRENT.NS", "UBL.NS", "VEDL.NS", "VOLTAS.NS",
+    "ZOMATO.NS", "ZYDUSLIFE.NS",
+    # Additional Large and Midcap Liquid Names
+    "ADANIENT.NS", "ADANIGREEN.NS", "ADANIENSOL.NS", "ATGL.NS",
+    "BAJAJ-AUTO.NS", "CAMS.NS", "CANFINHOME.NS",
+    "CONCOR.NS", "COROMANDEL.NS", "DALBHARAT.NS", "DIXON.NS",
+    "GLENMARK.NS", "HAL.NS", "ICICIGI.NS", "ICICIPRULI.NS",
+    "IDEA.NS", "INDHOTEL.NS", "INDUSTOWER.NS", "INOXWIND.NS",
+    "IOC.NS", "ISEC.NS", "JKCEMENT.NS", "JUBILANT.NS",
+    "KAJARIACER.NS", "LAURUSLABS.NS", "LICHSGFIN.NS", "LINDEINDIA.NS",
+    "MCX.NS", "METROPOLIS.NS", "NAUKRI.NS",
+    "NAVINFLUOR.NS", "PIIND.NS", "POLYCAB.NS", "RELAXO.NS", "ROUTE.NS",
+    "SBICARD.NS", "SBILIFE.NS", "SCHAEFFLER.NS", "SOLARINDS.NS",
+    "SUNTV.NS", "TATACHEM.NS", "TATACOMM.NS",
+    "TATAELXSI.NS", "TATAINVEST.NS", "TIINDIA.NS", "TTKPRESTIG.NS",
+    "VGUARD.NS", "WHIRLPOOL.NS", "ZEEL.NS",
+    # Highly Liquid Missing Nifty 500 & F&O Leaders
+    "TATAPOWER.NS", "BHEL.NS", "IRFC.NS", "RVNL.NS", "IREDA.NS",
+    "LTF.NS", "HUDCO.NS", "ASHOKLEY.NS", "JIOFIN.NS", "HINDALCO.NS",
+    "JSWENERGY.NS", "NHPC.NS", "SJVN.NS", "UNIONBANK.NS", "IOB.NS",
+    "BANKBARODA.NS", "PNB.NS", "INDIANB.NS", "NYKAA.NS", "PAYTM.NS",
+    "POLICYBZR.NS", "DELHIVERY.NS", "SUZLON.NS", "YESBANK.NS", "LICI.NS",
+    "GICRE.NS", "IRB.NS", "NBCC.NS", "ENGINEERSIN.NS", "NATIONALUM.NS",
+    "HINDZINC.NS", "OIL.NS", "MRPL.NS", "CHENNPETRO.NS", "MGL.NS",
+    "IGL.NS", "GUJGASLTD.NS", "GSFC.NS", "RCF.NS", "CHAMBLFERT.NS",
+    "HFCL.NS", "TEJASNET.NS", "KPITTECH.NS", "COFORGE.NS", "CYIENT.NS",
+    "LTTS.NS", "SONACOMS.NS", "EXIDEIND.NS", "ARE&M.NS", "BOSCHLTD.NS",
+    "UNOCOUNT.NS", "APOLLOTYRE.NS", "JKTYRE.NS", "CEATLTD.NS", "MAXHEALTH.NS",
+    "MANKIND.NS", "AUROPHARMA.NS", "STAR.NS", "BATAINDIA.NS", "METROBRAND.NS",
+    "CAMPUS.NS", "ABFRL.NS", "V-MART.NS", "FORTIS.NS", "ADANIPOWER.NS",
+    "HPCL.NS", "PEL.NS", "IBULHSGFIN.NS", "PVRINOX.NS", "AMBUJACEM.NS"
 ]
+
 # Deduplicate while preserving order
 _seen: set = set()
 NIFTY500_SAMPLE = [
@@ -501,7 +519,7 @@ def normalize_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def _download(ticker: str, retries: int = 3) -> Optional[pd.DataFrame]:
+def _download(ticker: str, retries: int = 3, use_cache_only: bool = False) -> Optional[pd.DataFrame]:
     # Ensure cache directory exists
     if not os.path.exists(CACHE_DIR):
         try:
@@ -511,6 +529,19 @@ def _download(ticker: str, retries: int = 3) -> Optional[pd.DataFrame]:
 
     cache_path = os.path.join(CACHE_DIR, f"{ticker}.csv")
     
+    # If use_cache_only is True, strictly load from cache (offline scan mode)
+    if use_cache_only:
+        if os.path.exists(cache_path):
+            try:
+                df = pd.read_csv(cache_path, index_col=0, parse_dates=True)
+                if df is not None and not df.empty:
+                    df = normalize_dataframe(df)
+                    if df is not None and not df.empty:
+                        return df
+            except Exception:
+                pass
+        return None
+
     # Check cache validity (reuse if modified within last 1 hour)
     if os.path.exists(cache_path):
         try:
@@ -599,7 +630,8 @@ def analyse(
     min_len  = max(210, vol_days + 10, hv_days + 5)
 
     try:
-        df = _download(ticker)
+        use_cache_only = cfg.get("USE_CACHE_ONLY", False)
+        df = _download(ticker, use_cache_only=use_cache_only)
         if df is None or df.empty or len(df) < min_len:
             if explain_skip:
                 return {
@@ -909,16 +941,16 @@ def analyse(
             result["signal_strength"] = "Institutional Strong"
         elif score >= 85:
             result["confidence"] = "A"
-            result["signal_strength"] = "Strong"
+            result["signal_strength"] = "Strong Momentum"
         elif score >= 70:
             result["confidence"] = "B"
-            result["signal_strength"] = "Moderate"
+            result["signal_strength"] = "Moderate Setup"
         elif score >= 55:
             result["confidence"] = "C"
-            result["signal_strength"] = "Weak"
+            result["signal_strength"] = "Weak Signal"
         else:
             result["confidence"] = "D"
-            result["signal_strength"] = "Poor"
+            result["signal_strength"] = "Avoid"
 
         if score < cfg["MIN_SCORE"]:
             if explain_skip:
