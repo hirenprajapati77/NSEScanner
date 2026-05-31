@@ -57,7 +57,7 @@ CFG: Dict = {
     "EMA_50":         os.getenv("EMA_50",  "true").lower() == "true",
     "EMA_200":        os.getenv("EMA_200", "true").lower() == "true",
     # Minimum score to surface a signal
-    "MIN_SCORE":      int(os.getenv("MIN_SCORE",      "55")),
+    "MIN_SCORE":      int(os.getenv("MIN_SCORE",      "70")),
     # 52-week lookback window (trading days)
     "HV_DAYS":        int(os.getenv("HV_DAYS",        "252")),
     # Concurrency
@@ -861,7 +861,22 @@ def analyse(
         else:
             regime = "Consolidation"
 
-        # ── Critical Fix #3: Risk / Reward Calculations ───
+        # ── Critical Fix #3: Risk / Reward Calculations with ATR-based Stop Loss Cap ───
+        # Enforce a minimum stop-loss distance of 1.5 * ATR to prevent dangerously tight stops
+        min_risk_distance = 1.5 * last_atr
+        
+        if not bearish:
+            # Bullish: risk = entry - stop_loss
+            current_risk = entry - stop_loss
+            if current_risk < min_risk_distance:
+                stop_loss = round(entry - min_risk_distance, 2)
+        else:
+            # Bearish: risk = stop_loss - entry
+            current_risk = stop_loss - entry
+            if current_risk < min_risk_distance:
+                stop_loss = round(entry + min_risk_distance, 2)
+
+        # Now re-calculate risk and reward with the adjusted stop-loss
         reward = abs(target1 - entry)
         risk = abs(entry - stop_loss)
         rr = round(reward / risk, 2) if risk > 0 else 0.0
@@ -915,6 +930,8 @@ def analyse(
             "ema50":             round(float(last["ema50"]),  2),
             "ema200":            round(float(last["ema200"]), 2),
             "scanned_date":      df.index[-1].strftime("%d-%b-%Y"),
+            "scanned_time":      datetime.now().strftime("%H:%M"),
+            "dist_from_entry":   round(((close - entry) / entry) * 100, 2) if entry else 0.0,
             "atr":               round(last_atr, 2),
             "range_expansion":   range_expansion,
             "ema20_slope":       ema20_slope,

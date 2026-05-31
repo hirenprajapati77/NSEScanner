@@ -172,6 +172,8 @@ def _bootstrap_cache() -> None:
                 "signal_type":     _safe(r, "Signal",         str,   "Bull"),
                 "price":           price,
                 "entry":           _safe(r, "Entry",          float, 0.0),
+                "dist_from_entry": _safe(r, "Dist_From_Entry_%", float, 0.0),
+                "scanned_time":    _safe(r, "Scanned_Time",   str,   ""),
                 "target":          _safe(r, "Target_H3",      float, 0.0),
                 "target2":         _safe(r, "Target_H4",      float, 0.0),
                 "stop_loss":       _safe(r, "StopLoss_L3",    float, 0.0),
@@ -319,7 +321,12 @@ def _do_scan(params: dict, scan_id: str) -> None:
 
 @app.route("/")
 def index():
-    return render_template_string(HTML)
+    from flask import make_response
+    response = make_response(render_template_string(HTML))
+    response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["Expires"] = "0"
+    return response
 
 
 @app.route("/health")
@@ -336,10 +343,31 @@ def market_status():
     now_ist = datetime.now(ist_tz)
     is_open = is_nse_market_open()
     
+    # Calculate next open datetime in IST (9:15 AM)
+    next_open = now_ist.replace(hour=9, minute=15, second=0, microsecond=0)
+    
+    # If today is a weekday and already after 9:15 AM, push to tomorrow
+    if now_ist >= next_open:
+        next_open += timedelta(days=1)
+        
+    # If the next open falls on a weekend, push to Monday
+    while next_open.weekday() >= 5:
+        next_open += timedelta(days=1)
+        
+    diff = next_open - now_ist
+    seconds_remaining = int(diff.total_seconds())
+    
+    h = seconds_remaining // 3600
+    m = (seconds_remaining % 3600) // 60
+    s_sec = seconds_remaining % 60
+    countdown_str = f"{h}h {m}m {s_sec}s"
+    
     return jsonify({
         "is_open": is_open,
         "time": now_ist.strftime("%d-%b-%Y %H:%M:%S IST"),
-        "day": now_ist.strftime("%A")
+        "day": now_ist.strftime("%A"),
+        "next_open_in": countdown_str if not is_open else "",
+        "next_open_seconds": seconds_remaining if not is_open else 0
     })
 
 
@@ -481,6 +509,7 @@ def export_csv():
             "Signal":          r.get("signal_type", "Bull"),
             "Price":           r.get("price"),
             "Entry":           r.get("entry"),
+            "Dist_From_Entry_%": r.get("dist_from_entry"),
             "Target_H3":       r.get("target"),
             "Target_H4":       r.get("target2"),
             "StopLoss_L3":     r.get("stop_loss"),
@@ -500,6 +529,7 @@ def export_csv():
             "RS_Pct":          r.get("rs_pct", 0.0),
             "Turnover_Cr":     r.get("turnover_score", 0.0),
             "Sparkline":       json.dumps(r.get("sparkline", [])),
+            "Scanned_Time":    r.get("scanned_time", ""),
             "Scanned_At":      s["last_scan"],
         })
 
@@ -713,6 +743,114 @@ td{padding:10px 14px;color:var(--text);white-space:nowrap;vertical-align:middle}
 .modal .btn-cancel{background:#374151;color:var(--muted);border:none;border-radius:6px;padding:10px 16px;font-size:13px;cursor:pointer;transition:background .2s}
 .modal .btn-cancel:hover{color:var(--text)}
 
+/* Help Modal & Calculator styling */
+.btn-help {
+  background: rgba(59, 130, 246, 0.12);
+  color: #60a5fa;
+  border: 1px solid rgba(59, 130, 246, 0.25);
+  padding: 7px 14px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  transition: all 0.2s;
+  outline: none;
+}
+.m-show-inline { display: none; }
+.btn-help:hover {
+  background: rgba(59, 130, 246, 0.22);
+  border-color: rgba(59, 130, 246, 0.4);
+}
+.modal.help-modal {
+  width: 720px;
+  max-width: 95%;
+  max-height: 85vh;
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
+.help-section {
+  border-bottom: 1px solid #374151;
+  padding-bottom: 18px;
+  margin-bottom: 18px;
+  text-align: left;
+}
+.help-section:last-child {
+  border: none;
+  padding-bottom: 0;
+  margin-bottom: 0;
+}
+.help-section h4 {
+  color: #f3f4f6;
+  font-size: 14px;
+  margin: 0 0 10px 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.help-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 12px;
+  margin-top: 10px;
+}
+.help-card {
+  background: #111827;
+  padding: 14px;
+  border-radius: 8px;
+  border: 0.5px solid #374151;
+}
+.help-card.bull { border-left: 3px solid var(--green); }
+.help-card.mixed { border-left: 3px solid var(--yellow); }
+.help-card.entry { border-left: 3px solid var(--blue); }
+.calc-container {
+  background: #111827;
+  padding: 16px;
+  border-radius: 8px;
+  border: 1px solid #374151;
+  margin-top: 10px;
+}
+.calc-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.calc-container label {
+  margin-top: 0 !important;
+  margin-bottom: 6px !important;
+  text-align: left;
+}
+.calc-result {
+  background: rgba(16, 185, 129, 0.08);
+  border: 1px solid rgba(16, 185, 129, 0.25);
+  color: #34d399;
+  padding: 14px;
+  border-radius: 6px;
+  margin-top: 14px;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  gap: 14px;
+  text-align: left;
+}
+.calc-res-item {
+  display: flex;
+  flex-direction: column;
+}
+.calc-res-lbl {
+  font-size: 10px;
+  color: #a7f3d0;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 4px;
+}
+.calc-res-val {
+  font-size: 16px;
+  font-weight: 700;
+}
+
 /* Empty state */
 .empty-state{text-align:center;padding:60px 20px;color:#4b5563}
 
@@ -736,6 +874,9 @@ td{padding:10px 14px;color:var(--text);white-space:nowrap;vertical-align:middle}
   .action-bar button{width:100%;justify-content:center}
   .modal{width:95% !important}
   .m-hide{display:none !important}
+  .d-hide-m { display: none !important; }
+  .m-show-inline { display: inline !important; }
+  .btn-help { padding: 6px 10px; font-size: 10px; }
 }
 </style>
 </head>
@@ -749,12 +890,17 @@ td{padding:10px 14px;color:var(--text);white-space:nowrap;vertical-align:middle}
       <span class="nse">NSE</span>&nbsp;<span class="vol">Volume</span>&nbsp;Scanner
       <span class="ver">v3.0 [Phase 3 Polish]</span>
     </div>
-    <div class="live-badge" id="liveBadge">
-      <span style="animation:pulse 1.5s infinite">●</span>
-      <span id="liveBadgeText">Idle — Ready to Scan</span>
-      <span id="liveStatsSpan" style="display:none">
-        Live — <span id="bull-count">0</span> bullish &nbsp;|&nbsp; <span id="bear-count">0</span> bearish
-      </span>
+    <div style="display:flex;align-items:center;gap:12px;margin-left:auto">
+      <button class="btn-help" onclick="openHelpModal()">
+        <i class="ti ti-book-open"></i> <span class="d-hide-m">How to Use & Trade</span><span class="m-show-inline">Guide</span>
+      </button>
+      <div class="live-badge" id="liveBadge">
+        <span style="animation:pulse 1.5s infinite">●</span>
+        <span id="liveBadgeText">Idle — Ready to Scan</span>
+        <span id="liveStatsSpan" style="display:none">
+          Live — <span id="bull-count">0</span> bullish &nbsp;|&nbsp; <span id="bear-count">0</span> bearish
+        </span>
+      </div>
     </div>
   </div>
 
@@ -888,6 +1034,7 @@ td{padding:10px 14px;color:var(--text);white-space:nowrap;vertical-align:middle}
         <th onclick="sortBy('score')" title="Momentum Score (0-100) combining trend, volume, relative strength, and ATR range expansion">SCORE <span class="sort-icon" id="si-score"><i class="ti ti-selector"></i></span></th>
         <th onclick="sortBy('price')" title="Last Traded Price & Scanned Timestamp">PRICE <span class="sort-icon" id="si-price"><i class="ti ti-selector"></i></span></th>
         <th onclick="sortBy('entry')" title="Institutional Entry Zone based on Camarilla Daily Pivot level">ENTRY (PIVOT) <span class="sort-icon" id="si-entry"><i class="ti ti-selector"></i></span></th>
+        <th onclick="sortBy('dist_from_entry')" title="Percentage distance between last close price and Pivot entry">DIST % <span class="sort-icon" id="si-dist_from_entry"><i class="ti ti-selector"></i></span></th>
         <th onclick="sortBy('stop_loss')" title="Volatility-adjusted stop-loss set at daily Camarilla L3 (Bullish) or H3 (Bearish)">STOP LOSS <span class="sort-icon" id="si-stop_loss"><i class="ti ti-selector"></i></span></th>
         <th title="Camarilla H3 (Target 1) and H4 (Target 2) intraday breakout targets">TARGETS (T1/T2)</th>
         <th onclick="sortBy('risk_percentage')" title="Capital at risk as a percentage of entry price (capped at 5.0% maximum)">RISK % <span class="sort-icon" id="si-risk_percentage"><i class="ti ti-selector"></i></span></th>
@@ -902,7 +1049,7 @@ td{padding:10px 14px;color:var(--text);white-space:nowrap;vertical-align:middle}
       </tr></thead>
       <tbody id="tblBody">
         <tr>
-          <td colspan="16" class="empty-state">
+          <td colspan="17" class="empty-state">
             <i class="ti ti-chart-candlestick" style="font-size:32px;color:#374151;display:block;margin-bottom:8px"></i>
             No results yet — configure filters and run a scan
           </td>
@@ -941,6 +1088,99 @@ td{padding:10px 14px;color:var(--text);white-space:nowrap;vertical-align:middle}
       <div class="mrow">
         <button class="btn-save" onclick="saveAlert()">Save & Activate</button>
         <button class="btn-cancel" onclick="closeModal()">Cancel</button>
+      </div>
+    </div>
+  </div>
+  <!-- Help Modal -->
+  <div class="modal-bg" id="helpModalBg">
+    <div class="modal help-modal">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;border-bottom:1px solid #374151;padding-bottom:12px">
+        <h3 style="margin:0;font-size:18px"><i class="ti ti-book" style="color:#60a5fa"></i> Trade Sizing & Execution Blueprint</h3>
+        <i class="ti ti-x" onclick="closeHelpModal()" style="font-size:18px;color:var(--muted);cursor:pointer;transition:color 0.2s" onmouseover="this.style.color='#f3f4f6'" onmouseout="this.style.color='var(--muted)'"></i>
+      </div>
+      
+      <!-- 1. The Tabs -->
+      <div class="help-section">
+        <h4><i class="ti ti-folders" style="color:#34d399"></i> 1. Setup Classifications (The Tabs)</h4>
+        <p style="font-size:12px;color:var(--muted);margin-bottom:10px">The scanner runs long-term trend filters and groups signals based on daily candlestick body color:</p>
+        <div class="help-grid">
+          <div class="help-card bull">
+            <span style="font-size:12px;font-weight:700;color:var(--green)">Bullish Setups</span>
+            <p style="font-size:11px;color:var(--muted);margin-top:6px">Strong long-term uptrend + Green daily closing candle. Momentum breakouts ready to run.</p>
+          </div>
+          <div class="help-card mixed">
+            <span style="font-size:12px;font-weight:700;color:var(--yellow)">Mixed Setups</span>
+            <p style="font-size:11px;color:var(--muted);margin-top:6px">Strong long-term uptrend + Red daily closing candle. Pullback consolidations inside a trend.</p>
+          </div>
+          <div class="help-card entry">
+            <span style="font-size:12px;font-weight:700;color:var(--blue)">Entry Ready</span>
+            <p style="font-size:11px;color:var(--muted);margin-top:6px">Active signals trading within 2% of their institutional Daily Pivot price (best risk reward).</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- 2. Position Size Calculator -->
+      <div class="help-section">
+        <h4><i class="ti ti-calculator" style="color:#60a5fa"></i> 2. Interactive Position Sizer</h4>
+        <p style="font-size:12px;color:var(--muted)">Calculate the exact shares to buy using your strict 1% risk limit. Never risk random amounts of capital.</p>
+        <div class="calc-container">
+          <div class="calc-row">
+            <div>
+              <label>Trading Capital (₹)</label>
+              <input type="number" id="cCapital" value="50000" oninput="runCalc()">
+            </div>
+            <div>
+              <label>Risk per Trade (%)</label>
+              <input type="number" id="cRiskPct" value="1" oninput="runCalc()">
+            </div>
+          </div>
+          <div class="calc-row">
+            <div>
+              <label>Stock Entry Price (₹)</label>
+              <input type="number" id="cEntry" placeholder="e.g. 1500" oninput="runCalc()">
+            </div>
+            <div>
+              <label>Scanned Stop Loss (₹)</label>
+              <input type="number" id="cStopLoss" placeholder="e.g. 1420" oninput="runCalc()">
+            </div>
+          </div>
+          <div class="calc-result">
+            <div class="calc-res-item">
+              <span class="calc-res-lbl">Total Risk</span>
+              <span class="calc-res-val" id="resRisk" style="color:#f87171">₹500.00</span>
+            </div>
+            <div class="calc-res-item">
+              <span class="calc-res-lbl">Shares to Buy</span>
+              <span class="calc-res-val" id="resShares" style="color:#60a5fa">0 shares</span>
+            </div>
+            <div class="calc-res-item">
+              <span class="calc-res-lbl">Trade Value</span>
+              <span class="calc-res-val" id="resValue">₹0.00</span>
+            </div>
+            <div class="calc-res-item">
+              <span class="calc-res-lbl">SL Distance (%)</span>
+              <span class="calc-res-val" id="resSLDist" style="color:#f87171">0.00%</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 3. Daily execution -->
+      <div class="help-section">
+        <h4><i class="ti ti-player-play" style="color:#34d399"></i> 3. Professional Execution Steps</h4>
+        <div style="font-size:12px;color:var(--muted);line-height:1.6">
+          <ol style="margin: 0; padding-left: 20px;">
+            <li><strong>Post-Market Scan:</strong> Scan every evening. Find setups with <strong>Score 90+ (A/A+ Grade)</strong> in the Bullish or Mixed Setup tabs.</li>
+            <li><strong>Sizing:</strong> Use the interactive calculator above to get the precise number of shares for your risk allocation.</li>
+            <li><strong>Entry:</strong> Place a Market Buy order exactly at <strong>9:15 AM</strong> on the next day's open.</li>
+            <li><strong>Set GTT / Bracket:</strong> Set a bracket order with profit target at <strong>T1 (H3)</strong> and stop-loss at <strong>Stop Loss (L3)</strong>.</li>
+            <li><strong>Recycle:</strong> If neither target nor stop-loss is hit within <strong>5 trading days</strong>, manually close the position at the 5th day's market close.</li>
+          </ol>
+        </div>
+      </div>
+      
+      <div style="text-align:right;margin-top:16px">
+        <button class="btn-cancel" onclick="closeHelpModal()" style="padding:8px 20px;font-size:12px;margin:0">Done</button>
       </div>
     </div>
   </div>
@@ -1098,7 +1338,7 @@ function updateCounts(){
     bullish:   base.filter(s=>s.signal_type==='Bull' && s.candle==='Bull').length,
     bearish:   base.filter(s=>s.signal_type==='Bear' && s.candle==='Bear').length,
     mixed:     base.filter(s=>(s.signal_type==='Bull'&&s.candle==='Bear')||(s.signal_type==='Bear'&&s.candle==='Bull')).length,
-    entry:     base.filter(s=>Math.abs(s.price-s.entry)/s.entry<=0.005 && s.vol_ratio>=vm && s.ema10_pass && s.ema20_pass && s.ema50_pass && s.ema200_pass).length,
+    entry:     base.filter(s=>Math.abs(s.price-s.entry)/s.entry<=0.02).length,
     hv:        base.filter(s=>s.days<=10).length,
     camarilla: base.length,
     watchlist: base.filter(s=>watchlist.includes(s.symbol)).length,
@@ -1133,7 +1373,7 @@ function render(){
   if(activeTab==='bullish')        f=f.filter(s=>s.signal_type==='Bull' && s.candle==='Bull');
   else if(activeTab==='bearish')   f=f.filter(s=>s.signal_type==='Bear' && s.candle==='Bear');
   else if(activeTab==='mixed')     f=f.filter(s=>(s.signal_type==='Bull'&&s.candle==='Bear')||(s.signal_type==='Bear'&&s.candle==='Bull'));
-  else if(activeTab==='entry')     f=f.filter(s=>Math.abs(s.price-s.entry)/s.entry<=0.005 && s.vol_ratio>=vm && s.ema10_pass && s.ema20_pass && s.ema50_pass && s.ema200_pass);
+  else if(activeTab==='entry')     f=f.filter(s=>Math.abs(s.price-s.entry)/s.entry<=0.02);
   else if(activeTab==='hv')        f=f.filter(s=>s.days<=10);
   else if(activeTab==='watchlist') f=f.filter(s=>watchlist.includes(s.symbol));
 
@@ -1172,7 +1412,7 @@ function render(){
   }
 
   if(!f.length){
-    tbody.innerHTML=`<tr><td colspan="16" class="empty-state">
+    tbody.innerHTML=`<tr><td colspan="17" class="empty-state">
       <i class="ti ti-chart-candlestick" style="font-size:32px;color:#374151;display:block;margin-bottom:8px"></i>
       No signals. Click <b>Run Live Scan</b> or search tickers above.</td></tr>`;
     return;
@@ -1188,6 +1428,7 @@ function render(){
     }).join('');
     const rPct=s.hv_high!==s.hv_low?Math.min(100,Math.max(0,((s.price-s.hv_low)/(s.hv_high-s.hv_low))*100)):50;
     const isFav=watchlist.includes(s.symbol);
+    const distVal = s.dist_from_entry !== undefined ? s.dist_from_entry : (s.entry ? ((s.price - s.entry) / s.entry) * 100 : 0);
     const sigBadge=isBull?`<span class="sig-buy">BUY</span>`:`<span class="sig-sell">SELL</span>`;
     
     // Score breakdown tooltip calculation
@@ -1303,15 +1544,16 @@ function render(){
       </td>
       <td style="cursor:help" title="${tooltip}"><div style="text-align:center">${confBadge}</div><div style="font-size:9px;color:var(--muted);margin-top:4px;text-align:center">${s.signal_strength || ''}</div></td>
       <td><span class="score" style="cursor:help;" title="${tooltip}">${s.score}<span class="den">/100</span></span></td>
-      <td><div class="price-main">${fmt(s.price)}</div><div class="price-date">● ${s.scanned_date||'Today'}</div></td>
+      <td><div class="price-main">${fmt(s.price)}</div><div class="price-date">● ${s.scanned_date||'Today'} ${s.scanned_time ? '@ ' + s.scanned_time : ''}</div></td>
       <td>${fmt(s.entry)}</td>
+      <td><span class="${distVal > 2.0 ? 'dn' : distVal < -2.0 ? 'dn' : 'up'}" style="font-weight:600">${distVal > 0 ? '+' : ''}${distVal.toFixed(1)}%</span></td>
       <td class="sl">${fmt(s.stop_loss)}</td>
       <td class="cam-levels">
         <div class="cam-h3" style="color:var(--teal)">T1 ${fmt(s.target)}</div>
         <div class="cam-h3" style="color:var(--blue)">T2 ${fmt(s.target2 || 0)}</div>
       </td>
       <td class="${riskColor}">${s.risk_percentage ? s.risk_percentage.toFixed(1) + '%' : '—'}</td>
-      <td class="${rrColor}" style="font-weight:600">${s.rr ? s.rr.toFixed(1) + 'x' : '—'}</td>
+      <td class="${rrColor}" style="font-weight:600">${s.rr >= 99.0 ? '99x+' : s.rr ? s.rr.toFixed(1) + 'x' : '—'}</td>
       <td class="${rsColor} m-hide">${s.rs_pct ? (s.rs_pct > 0 ? '+' : '') + s.rs_pct.toFixed(1) + '%' : '—'}</td>
       <td class="m-hide" style="color:${ageColor};font-weight:600">${ageLabel}</td>
       <td class="neutral m-hide" style="font-weight:600">${s.turnover_score ? '₹' + s.turnover_score.toFixed(2) + ' Cr' : '—'}</td>
@@ -1320,7 +1562,7 @@ function render(){
         <div class="vol-bar"><div class="vol-fill" style="width:${volPct}%;background:${volColor}"></div></div>
         <br><span style="font-size:10px;color:var(--muted)">${s.vol_ratio.toFixed(2)}x</span>
       </td>
-      <td class="m-hide"><span class="${s.candle==='Bull'?'c-bull':'c-bear'}">${s.candle}</span></td>
+      <td class="m-hide"><span class="${s.candle==='Bull'?'c-bull':'c-bear'}">${s.candle==='Bull'?'🟢 Green':'🔴 Red'} Candle</span></td>
       <td class="m-hide"><i class="ti ti-star" style="font-size:16px;color:${isFav?'var(--yellow)':'#4b5563'};cursor:pointer;transition:color .2s"
         onclick="toggleWatch('${s.symbol}',this)"></i></td>
     </tr>`;
@@ -1533,8 +1775,30 @@ function toggleAutoScan(){
   }, 1000);
 }
 
-// ── Market status checks ──────────────────────────────
+// ── Market status checks & countdown ──────────────────────────
 let marketTimer = null;
+let countdownSecs = 0;
+let countdownTimer = null;
+
+function tickMarketCountdown() {
+  if (countdownSecs <= 0) {
+    if (countdownTimer) {
+      clearInterval(countdownTimer);
+      countdownTimer = null;
+    }
+    return;
+  }
+  countdownSecs--;
+  const h = Math.floor(countdownSecs / 3600);
+  const m = Math.floor((countdownSecs % 3600) / 60);
+  const s = countdownSecs % 60;
+  
+  const span = document.getElementById('marketCountdownSpan');
+  if (span) {
+    span.textContent = ` (Next open in: ${h}h ${m}m ${s}s)`;
+  }
+}
+
 function checkMarketStatus(){
   fetch('/market_status')
     .then(r=>r.json())
@@ -1543,12 +1807,22 @@ function checkMarketStatus(){
       const mb = document.getElementById('marketBanner');
       if (marketClosed) {
         mb.style.display = 'flex';
-        mb.querySelector('span').textContent = `NSE Market is Closed (${d.time}) — showing last session data. Live scanners paused.`;
+        mb.querySelector('span').innerHTML = `NSE Market is Closed (${d.time}) — showing last session data. Live scanners paused.<span id="marketCountdownSpan" style="color:var(--yellow);font-weight:600;margin-left:5px"></span>`;
+        
+        countdownSecs = d.next_open_seconds || 0;
+        if (countdownTimer) clearInterval(countdownTimer);
+        tickMarketCountdown();
+        countdownTimer = setInterval(tickMarketCountdown, 1000);
+        
         if (autoTimer) {
           document.getElementById('countdownSpan').textContent = '(Market Closed)';
         }
       } else {
         mb.style.display = 'none';
+        if (countdownTimer) {
+          clearInterval(countdownTimer);
+          countdownTimer = null;
+        }
       }
     }).catch(()=>{});
 }
@@ -1579,6 +1853,37 @@ function showModal(t){
   document.getElementById('modalBg').classList.add('show');
 }
 function closeModal(){document.getElementById('modalBg').classList.remove('show');}
+function openHelpModal() {
+  document.getElementById('helpModalBg').classList.add('show');
+  runCalc();
+}
+function closeHelpModal() {
+  document.getElementById('helpModalBg').classList.remove('show');
+}
+function runCalc() {
+  const cap = parseFloat(document.getElementById('cCapital').value) || 0;
+  const riskPct = parseFloat(document.getElementById('cRiskPct').value) || 0;
+  const entry = parseFloat(document.getElementById('cEntry').value) || 0;
+  const sl = parseFloat(document.getElementById('cStopLoss').value) || 0;
+  
+  const totalRisk = (cap * riskPct) / 100;
+  document.getElementById('resRisk').textContent = '₹' + totalRisk.toLocaleString('en-IN', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+  
+  if (entry > 0 && sl > 0 && entry > sl) {
+    const slDist = ((entry - sl) / entry) * 100;
+    document.getElementById('resSLDist').textContent = slDist.toFixed(2) + '%';
+    
+    const shares = Math.floor(totalRisk / (entry - sl));
+    document.getElementById('resShares').textContent = shares + ' shares';
+    
+    const tradeVal = shares * entry;
+    document.getElementById('resValue').textContent = '₹' + tradeVal.toLocaleString('en-IN', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+  } else {
+    document.getElementById('resSLDist').textContent = '0.00%';
+    document.getElementById('resShares').textContent = '0 shares';
+    document.getElementById('resValue').textContent = '₹0.00';
+  }
+}
 function saveAlert(){
   let params={type:_mtype};
   if(_mtype==='tg'){
