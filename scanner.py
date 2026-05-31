@@ -26,6 +26,7 @@ import pandas as pd
 import requests
 import yfinance as yf
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from regime import get_regime, adjust_score_for_regime
 from dotenv import load_dotenv
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
@@ -670,6 +671,19 @@ def analyse(
 
         last    = df.iloc[-1]
         close   = float(last["close"])
+
+        # Minimum Price Filter
+        min_price = float(cfg.get("MIN_PRICE", 20.0))
+        if close < min_price:
+            log.info(f"🚩 {ticker}: Rejected due to low price (₹{close:.2f} < ₹{min_price:.2f})")
+            if explain_skip:
+                return {
+                    "symbol": ticker.replace(".NS", ""),
+                    "skipped": True,
+                    "reason": f"Low price (₹{close:.2f} < ₹{min_price:.2f})"
+                }
+            return None
+
         high    = float(last["high"])
         low     = float(last["low"])
         volume  = float(last["volume"])
@@ -773,6 +787,52 @@ def analyse(
             "L4":    round(close - range_52w * 1.1 / 2,  2),
         }
 
+        # ── Advanced Quant Indicators ─────────────────────────
+        # ATR (14-day Average True Range)
+        highs = df["high"]
+        lows = df["low"]
+        closes = df["close"].shift(1)
+        tr1 = highs - lows
+        tr2 = (highs - closes).abs()
+        tr3 = (lows - closes).abs()
+        tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+        df["atr"] = tr.rolling(window=14).mean()
+        
+        last_atr = float(df["atr"].iloc[-1]) if not pd.isna(df["atr"].iloc[-1]) else (close * 0.02)
+        
+        # ── High Priority Improvement #2: 20-Day and 50-Day Relative Strength vs Nifty ───
+        nifty_20d, nifty_50d = get_nifty_returns()
+        
+        # Stock 20-day return
+        close_20d = float(df["close"].iloc[-20]) if len(df) >= 20 else float(df["close"].iloc[0])
+        stock_ret_20d = (close - close_20d) / close_20d * 100
+        rs_pct = round(stock_ret_20d - nifty_20d, 2)
+        
+        # Stock 50-day return (trend confirmation filter)
+        close_50d = float(df["close"].iloc[-50]) if len(df) >= 50 else float(df["close"].iloc[0])
+        stock_ret_50d = (close - close_50d) / close_50d * 100
+        rs_50d = round(stock_ret_50d - nifty_50d, 2)
+        
+        # Enforce positive 50-day relative strength for Bullish, or negative for Bearish
+        if not bearish and rs_50d <= 0:
+            log.info(f"🚩 {ticker}: Rejected due to negative 50-day relative strength ({rs_50d:.2f}% <= 0)")
+            if explain_skip:
+                return {
+                    "symbol": ticker.replace(".NS", ""),
+                    "skipped": True,
+                    "reason": f"Negative 50-day relative strength ({rs_50d:.2f}% <= 0)"
+                }
+            return None
+        elif bearish and rs_50d >= 0:
+            log.info(f"🚩 {ticker}: Rejected due to positive 50-day relative strength ({rs_50d:.2f}% >= 0)")
+            if explain_skip:
+                return {
+                    "symbol": ticker.replace(".NS", ""),
+                    "skipped": True,
+                    "reason": f"Positive 50-day relative strength ({rs_50d:.2f}% >= 0)"
+                }
+            return None
+
         if not bearish:
             target1 = cam["H3"]
             target2 = cam["H4"]
@@ -794,55 +854,20 @@ def analyse(
         downside = round((close - stop_loss) / close * 100, 2) if not bearish else round((stop_loss - close) / close * 100, 2)
 
         # ── Advanced Quant Indicators ─────────────────────────
-        # ATR (14-day Average True Range)
-        highs = df["high"]
-        lows = df["low"]
-        closes = df["close"].shift(1)
-        tr1 = highs - lows
-        tr2 = (highs - closes).abs()
-        tr3 = (lows - closes).abs()
-        tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
-        df["atr"] = tr.rolling(window=14).mean()
-        
-        last_atr = float(df["atr"].iloc[-1]) if not pd.isna(df["atr"].iloc[-1]) else (close * 0.02)
         today_range = high - low
         range_expansion = round(today_range / last_atr, 2) if last_atr else 1.0
-        
+
         # EMA 20 Slope (5-day percentage slope)
         prev_ema20 = float(df["ema20"].iloc[-5]) if len(df) >= 5 else float(last["ema20"])
         ema20_slope = round((float(last["ema20"]) - prev_ema20) / prev_ema20 * 100, 4) if prev_ema20 else 0.0
-        
+
         # ATR-based overextension distance
         atr_dist = round((close - float(last["ema20"])) / last_atr, 2) if last_atr else 0.0
-        
+
         # Volume percentile (last 20 days)
         vol_percentile = round(float((df["volume"].iloc[-20:] < volume).mean() * 100), 2)
 
-        # ── High Priority Improvement #2: 20-Day and 50-Day Relative Strength vs Nifty ───
-        nifty_20d, nifty_50d = get_nifty_returns()
-        
-        # Stock 20-day return
-        close_20d = float(df["close"].iloc[-20]) if len(df) >= 20 else float(df["close"].iloc[0])
-        stock_ret_20d = (close - close_20d) / close_20d * 100
-        rs_pct = round(stock_ret_20d - nifty_20d, 2)
-        
-        # Stock 50-day return (trend confirmation filter)
-        close_50d = float(df["close"].iloc[-50]) if len(df) >= 50 else float(df["close"].iloc[0])
-        stock_ret_50d = (close - close_50d) / close_50d * 100
-        rs_50d = round(stock_ret_50d - nifty_50d, 2)
-        
         rs_score = 10 if rs_pct > 0 else -10
-
-        # Enforce positive 50-day relative strength as a secondary momentum filter
-        if rs_50d <= 0:
-            log.info(f"🛡️ {ticker}: Rejected due to negative 50-day relative strength ({rs_50d:.2f}% <= 0)")
-            if explain_skip:
-                return {
-                    "symbol": ticker.replace(".NS", ""),
-                    "skipped": True,
-                    "reason": f"Negative 50-day relative strength ({rs_50d:.2f}% <= 0)"
-                }
-            return None
 
         # Relative Strength (percentage distance of close relative to 200 EMA)
         ema200_val = float(last["ema200"])
@@ -1022,6 +1047,21 @@ def run_scan(
         
         is_hit = _get_cache_hit(ticker)
         result = analyse(ticker, bearish=bearish, cfg_override=cfg_override)
+        if result:
+            raw_score = result["score"]
+            result["score"] = adjust_score_for_regime(
+                raw_score,
+                regime=regime_name,
+                is_bearish=(result.get("signal_type") == "Bear"),
+            )
+            result["raw_score"]    = raw_score
+            result["regime"]       = regime_name
+            result["regime_emoji"] = regime_data.get("emoji", "⚖️")
+
+            # Re-apply MIN_SCORE filter after regime adjustment
+            min_score = (cfg_override or {}).get("MIN_SCORE", CFG["MIN_SCORE"])
+            if result["score"] < min_score:
+                result = None
         
         with lock:
             counter["n"] += 1
@@ -1039,6 +1079,12 @@ def run_scan(
             except Exception:
                 pass
         return result
+
+    regime_data  = get_regime()
+    regime_name  = regime_data.get("regime", "NEUTRAL")
+    log.info(f"📊 Market Regime: {regime_name} | "
+             f"Breadth: {regime_data.get('breadth', 50)}% | "
+             f"NIFTY: ₹{regime_data.get('nifty_close', 0):,.2f}")
 
     with ThreadPoolExecutor(max_workers=workers) as pool:
         futures = {pool.submit(_task, t): t for t in tickers}
@@ -1097,7 +1143,10 @@ def run_scan(
         except Exception as exc:
             log.error(f"Error logging signal history to SQLite: {exc}")
 
-    return results
+    return {
+        "signals":     results,
+        "regime":      regime_data,
+    }
 
 
 # ─────────────────────────────────────────────────────────────

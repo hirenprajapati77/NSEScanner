@@ -18,6 +18,7 @@ import json
 import os
 import threading
 import uuid
+from regime import get_regime
 import copy
 from datetime import datetime
 
@@ -47,6 +48,7 @@ WATCHLIST_FILE = "watchlist.json"
 # ─────────────────────────────────────────────────────────────
 _state_lock = threading.Lock()
 _state = {
+    "regime":    {},
     "signals":   [],
     "last_scan": "Never",
     "scanning":  False,
@@ -240,6 +242,7 @@ def _do_scan(params: dict, scan_id: str) -> None:
         "TWILIO_TO":      params.get("twilio_to",    _load_config().get("twilio_to",   "")),
         "TURNOVER_LIMIT": float(params.get("turnover_limit", CFG["TURNOVER_LIMIT"])),
         "USE_CACHE_ONLY": bool(params.get("use_cache", False)),
+        "MIN_PRICE":      float(params.get("min_price", 20.0)),
     }
 
     scan_mode = params.get("scan_mode", "bullish")   # bullish | bearish | both
@@ -257,27 +260,37 @@ def _do_scan(params: dict, scan_id: str) -> None:
 
         if scan_mode in ("bullish", "both"):
             _update_state(progress={"current": 0, "total": len(tickers),
-                                     "ticker": "Starting bullish scan…", "eta": 0})
-            bull = run_scan(
+                                     "ticker": "Starting bullish scan📈", "eta": 0})
+            bull_result = run_scan(
                 tickers,
                 bearish=False,
                 progress_cb=_progress,
                 cfg_override=cfg_override,
                 stop_event=_stop_event,
             )
-            all_signals.extend(bull)
+            if isinstance(bull_result, dict):
+                all_signals.extend(bull_result.get("signals", []))
+                regime_data = bull_result.get("regime", {})
+            else:
+                all_signals.extend(bull_result)
+                regime_data = get_regime()
 
         if scan_mode in ("bearish", "both") and not _stop_event.is_set():
             _update_state(progress={"current": 0, "total": len(tickers),
-                                     "ticker": "Starting bearish scan…", "eta": 0})
-            bear = run_scan(
+                                     "ticker": "Starting bearish scan📉", "eta": 0})
+            bear_result = run_scan(
                 tickers,
                 bearish=True,
                 progress_cb=_progress,
                 cfg_override=cfg_override,
                 stop_event=_stop_event,
             )
-            all_signals.extend(bear)
+            if isinstance(bear_result, dict):
+                all_signals.extend(bear_result.get("signals", []))
+                regime_data = bear_result.get("regime", {})
+            else:
+                all_signals.extend(bear_result)
+                regime_data = get_regime()
 
         all_signals.sort(key=lambda x: x["score"], reverse=True)
 
@@ -289,6 +302,7 @@ def _do_scan(params: dict, scan_id: str) -> None:
                 last_scan=now,
                 scanning=False,
                 scan_id=None,
+                regime=regime_data,
                 error=None,
                 progress={"current": len(tickers), "total": len(tickers),
                            "ticker": "Done", "eta": 0},
@@ -606,6 +620,13 @@ def update_watchlist():
     return jsonify({"ok": True, "count": len(wl)})
 
 
+@app.route("/regime")
+def regime_route():
+    """Return Nifty Market Regime, refreshing if force parameter is passed."""
+    force = request.args.get("refresh") == "1"
+    return jsonify(get_regime(force_refresh=force))
+
+
 # ─────────────────────────────────────────────────────────────
 # HTML DASHBOARD (inline template with Dynamic Upgrades)
 # ─────────────────────────────────────────────────────────────
@@ -718,6 +739,34 @@ td{padding:10px 14px;color:var(--text);white-space:nowrap;vertical-align:middle}
 .vol-bar{height:5px;background:var(--bg3);border-radius:2px;width:60px;overflow:hidden;display:inline-block;vertical-align:middle}
 .vol-fill{height:100%;background:var(--green);border-radius:2px}
 .vol-fill.high{background:var(--yellow)}.vol-fill.spike{background:var(--red)}
+
+/* Sticky first column (Symbol) */
+table td:first-child,
+table th:first-child {
+  position: sticky;
+  left: 0;
+  background: var(--bg1);
+  z-index: 2;
+  min-width: 140px;
+  border-right: 1px solid var(--border);
+}
+thead th:first-child {
+  background: #161d2a;
+  z-index: 3;
+}
+tbody tr:hover td:first-child {
+  background: #121824 !important;
+}
+/* Star Icon styling */
+.star-icon {
+  font-size: 16px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+.star-icon:hover {
+  color: var(--yellow) !important;
+  transform: scale(1.2);
+}
 
 /* Action bar */
 .action-bar{background:var(--bg2);padding:12px 20px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;border-top:1px solid var(--border)}
@@ -904,6 +953,60 @@ td{padding:10px 14px;color:var(--text);white-space:nowrap;vertical-align:middle}
     </div>
   </div>
 
+  <!-- Regime Bar -->
+  <div id="regimeBar" style="
+    display:flex;align-items:center;gap:16px;flex-wrap:wrap;
+    padding:10px 20px;background:#0d1117;
+    border-bottom:1px solid var(--border);font-size:12px;">
+
+    <div style="display:flex;align-items:center;gap:8px">
+      <span id="regimeEmoji" style="font-size:18px">⚖️</span>
+      <div>
+        <div style="color:#6b7280;font-size:10px;font-weight:500;letter-spacing:.06em">NIFTY REGIME</div>
+        <div id="regimeLabel"
+          style="font-weight:700;font-size:13px;color:var(--yellow)">Loading…</div>
+      </div>
+    </div>
+
+    <div style="width:1px;height:30px;background:#1f2937"></div>
+
+    <div>
+      <div style="color:#6b7280;font-size:10px">NIFTY</div>
+      <div id="regimeNifty" style="font-weight:600;color:#f9fafb">—</div>
+    </div>
+
+    <div>
+      <div style="color:#6b7280;font-size:10px">BREADTH</div>
+      <div id="regimeBreadth" style="font-weight:600">—</div>
+    </div>
+
+    <div>
+      <div style="color:#6b7280;font-size:10px">EMA20/50/200</div>
+      <div id="regimeEMAs" style="font-weight:500;color:#9ca3af;font-size:11px">—</div>
+    </div>
+
+    <div>
+      <div style="color:#6b7280;font-size:10px">ATR %</div>
+      <div id="regimeATR" style="font-weight:600;color:#9ca3af">—</div>
+    </div>
+
+    <div>
+      <div style="color:#6b7280;font-size:10px">FROM 52W HIGH</div>
+      <div id="regimeHigh" style="font-weight:600;color:#f87171">—</div>
+    </div>
+
+    <div style="margin-left:auto;max-width:280px">
+      <div id="regimeDesc"
+        style="font-size:11px;color:#6b7280;font-style:italic;text-align:right">—</div>
+    </div>
+
+    <button onclick="refreshRegime()"
+      style="background:none;border:1px solid #374151;color:#6b7280;
+             border-radius:6px;padding:4px 10px;cursor:pointer;font-size:11px">
+      ↻ Refresh
+    </button>
+  </div>
+
   <!-- Cold-start banner -->
   <div class="cold-banner" id="coldBanner">
     <i class="ti ti-clock-pause"></i>
@@ -982,6 +1085,14 @@ td{padding:10px 14px;color:var(--text);white-space:nowrap;vertical-align:middle}
       <option value="bearish">Bearish only</option>
       <option value="both">Both</option>
     </select>
+    <label style="margin-left:8px">Min Price:</label>
+    <select id="minPrice" onchange="savePrefs()">
+      <option value="0">Any</option>
+      <option value="20" selected>₹20+</option>
+      <option value="50">₹50+</option>
+      <option value="100">₹100+</option>
+      <option value="200">₹200+</option>
+    </select>
     <label style="margin-left:8px">EMA:</label>
     <div class="ema-filters">
       <label class="ema-chip on" id="c10"><input type="checkbox" checked onchange="toggleEMA(this,'10')">10</label>
@@ -1045,7 +1156,7 @@ td{padding:10px 14px;color:var(--text);white-space:nowrap;vertical-align:middle}
         <th class="m-hide" title="Trend alignment indicators for 10, 20, 50, and 200 Exponential Moving Averages">EMA ✓</th>
         <th onclick="sortBy('vol_ratio')" class="m-hide" title="Volume spike ratio compared to rolling N-day average volume (minimum 2.0x required)">VOL <span class="sort-icon" id="si-vol_ratio"><i class="ti ti-selector"></i></span></th>
         <th onclick="sortBy('candle')" class="m-hide" title="Daily Candlestick Pattern Direction (Bull / Bear)">CANDLE <span class="sort-icon" id="si-candle"><i class="ti ti-selector"></i></span></th>
-        <th class="m-hide" title="Toggle Watchlist starred status">WATCH</th>
+        <th class="m-hide" title="Toggle Watchlist starred status"><i class="ti ti-star"></i> WATCH</th>
       </tr></thead>
       <tbody id="tblBody">
         <tr>
@@ -1243,6 +1354,59 @@ function sparklineSVG(prices) {
 }
 
 // ── Preferences (localStorage) ───────────────────────────
+function loadRegime() {
+  fetch('/regime')
+    .then(r => r.json())
+    .then(d => {
+      if (d.error) return;
+
+      const bar    = document.getElementById('regimeBar');
+      const label  = document.getElementById('regimeLabel');
+      const emoji  = document.getElementById('regimeEmoji');
+      const desc   = document.getElementById('regimeDesc');
+      const nifty  = document.getElementById('regimeNifty');
+      const bread  = document.getElementById('regimeBreadth');
+      const emas   = document.getElementById('regimeEMAs');
+      const atr    = document.getElementById('regimeATR');
+      const high   = document.getElementById('regimeHigh');
+
+      // Colour the whole bar bg
+      bar.style.borderBottom = '2px solid ' + d.color;
+
+      label.textContent  = d.emoji + '  ' + d.label;
+      label.style.color  = d.color;
+      emoji.textContent  = d.emoji;
+      desc.textContent   = d.description;
+
+      nifty.textContent  = '₹' + (d.nifty_close || 0).toLocaleString('en-IN',
+                            {maximumFractionDigits:2});
+      nifty.style.color  = d.color;
+
+      const b = d.breadth || 50;
+      bread.textContent  = b + '% above EMA50';
+      bread.style.color  = b >= 60 ? 'var(--green)' : b <= 40 ? 'var(--red)' : 'var(--yellow)';
+
+      emas.textContent   = [d.nifty_ema20, d.nifty_ema50, d.nifty_ema200]
+                            .map(v => Math.round(v).toLocaleString('en-IN')).join(' / ');
+
+      atr.textContent    = (d.atr_pct || 0).toFixed(2) + '%';
+      high.textContent   = '-' + (d.pct_from_high || 0).toFixed(1) + '%';
+    })
+    .catch(() => {});
+}
+
+function refreshRegime() {
+  fetch('/regime?refresh=1').then(r => r.json()).then(d => {
+    loadRegime();
+    showToast('Regime refreshed: ' + d.label);
+  });
+}
+
+// Load on page load + refresh every 15 minutes
+loadRegime();
+setInterval(loadRegime, 15 * 60 * 1000);
+
+
 function savePrefs(){
   try{
     localStorage.setItem('nse_prefs_h',JSON.stringify({
@@ -1251,6 +1415,7 @@ function savePrefs(){
       turnoverLimit: document.getElementById('turnoverLimit').value,
       scanMode:document.getElementById('scanMode').value,
       scanDataSource: document.getElementById('scanDataSource').value,
+      minPrice: document.getElementById('minPrice').value,
       ema10: emaReq[10], ema20:emaReq[20], ema50:emaReq[50], ema200:emaReq[200],
     }));
   }catch(e){}
@@ -1263,6 +1428,7 @@ function loadPrefs(){
     if(p.turnoverLimit) document.getElementById('turnoverLimit').value=p.turnoverLimit;
     if(p.scanMode) document.getElementById('scanMode').value=p.scanMode;
     if(p.scanDataSource) document.getElementById('scanDataSource').value=p.scanDataSource;
+    if(p.minPrice !== undefined) document.getElementById('minPrice').value=p.minPrice;
     [10,20,50,200].forEach(n=>{
       const v = p['ema'+n];
       if(v!==undefined){
@@ -1523,7 +1689,7 @@ function render(){
     const rsColor = s.rs_pct > 0 ? 'up' : 'dn';
     const volColor = s.vol_ratio >= 3.0 ? '#f87171' : s.vol_ratio >= 2.0 ? '#fbbf24' : '#4ade80';
 
-    return `<tr>
+    return `<tr onclick="openSizer(${s.entry}, ${s.stop_loss})" style="cursor:pointer">
       <td>
         <div style="display:flex;justify-content:space-between;align-items:center;gap:12px">
           <div>
@@ -1563,8 +1729,8 @@ function render(){
         <br><span style="font-size:10px;color:var(--muted)">${s.vol_ratio.toFixed(2)}x</span>
       </td>
       <td class="m-hide"><span class="${s.candle==='Bull'?'c-bull':'c-bear'}">${s.candle==='Bull'?'🟢 Green':'🔴 Red'} Candle</span></td>
-      <td class="m-hide"><i class="ti ti-star" style="font-size:16px;color:${isFav?'var(--yellow)':'#4b5563'};cursor:pointer;transition:color .2s"
-        onclick="toggleWatch('${s.symbol}',this)"></i></td>
+      <td class="m-hide"><i class="star-icon ti ti-star" style="color:${isFav?'var(--yellow)':'#4b5563'}"
+        onclick="toggleWatch('${s.symbol}',this); event.stopPropagation();"></i></td>
     </tr>`;
   }).join('');
   updateCounts();
@@ -1656,6 +1822,7 @@ function startScan(){
     vol_mult: document.getElementById('volMult').value,
     turnover_limit: document.getElementById('turnoverLimit').value,
     scan_mode:document.getElementById('scanMode').value,
+    min_price: document.getElementById('minPrice').value,
     use_cache: document.getElementById('scanDataSource').value === 'offline',
     ema10:  document.getElementById('c10').classList.contains('on'),
     ema20:  document.getElementById('c20').classList.contains('on'),
@@ -1853,6 +2020,11 @@ function showModal(t){
   document.getElementById('modalBg').classList.add('show');
 }
 function closeModal(){document.getElementById('modalBg').classList.remove('show');}
+function openSizer(entry, stopLoss) {
+  document.getElementById('cEntry').value = entry;
+  document.getElementById('cStopLoss').value = stopLoss;
+  openHelpModal();
+}
 function openHelpModal() {
   document.getElementById('helpModalBg').classList.add('show');
   runCalc();
