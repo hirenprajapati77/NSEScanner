@@ -1406,6 +1406,21 @@ function loadRegime() {
       // Store globally for other JS features
       window.niftyRegime = d.regime;
 
+      // Auto-enable EMA200 in bear markets if disabled
+      if (d.regime === 'STRONG_BEAR' || d.regime === 'BEAR') {
+        if (!emaReq[200]) {
+          emaReq[200] = true;
+          const chip = document.getElementById('c200');
+          const cb = chip && chip.querySelector('input');
+          if (cb) {
+            cb.checked = true;
+            chip.classList.add('on');
+          }
+          savePrefs();
+          render();
+        }
+      }
+
       // Display/hide bearWarning banner
       const bearWarn = document.getElementById('bearWarning');
       if (bearWarn) {
@@ -1524,7 +1539,12 @@ function preprocess(sigs){
 function updateCounts(){
   const srch=document.getElementById('tickerSearch').value.toLowerCase();
   const vm=parseFloat(document.getElementById('volMult').value);
-  const base=stocks.filter(s=>s.vol_ratio>=vm && (!srch||s.symbol.toLowerCase().includes(srch)));
+  const regimeLabel = document.getElementById('regimeLabel');
+  const regime = regimeLabel ? regimeLabel.textContent.toLowerCase() : 'neutral';
+  let base=stocks.filter(s=>s.vol_ratio>=vm && (!srch||s.symbol.toLowerCase().includes(srch)));
+  if (regime.includes('bear')) {
+    base = base.filter(s => s.confidence !== 'B');
+  }
   const counts={
     bullish:   base.filter(s=>s.signal_type==='Bull' && s.candle==='Bull').length,
     bearish:   base.filter(s=>s.signal_type==='Bear' && s.candle==='Bear').length,
@@ -1560,6 +1580,12 @@ function render(){
   const vm=parseFloat(document.getElementById('volMult').value);
 
   let f=stocks.filter(s=>s.vol_ratio>=vm && (!srch||s.symbol.toLowerCase().includes(srch)));
+
+  const regimeLabel = document.getElementById('regimeLabel');
+  const regime = regimeLabel ? regimeLabel.textContent.toLowerCase() : 'neutral';
+  if (regime.includes('bear')) {
+    f = f.filter(s => s.confidence !== 'B');
+  }
 
   if(activeTab==='bullish')        f=f.filter(s=>s.signal_type==='Bull' && s.candle==='Bull');
   else if(activeTab==='bearish')   f=f.filter(s=>s.signal_type==='Bear' && s.candle==='Bear');
@@ -1740,7 +1766,7 @@ function render(){
       <td style="cursor:help" title="${tooltip}"><div style="text-align:center">${confBadge}</div><div style="font-size:9px;color:var(--muted);margin-top:4px;text-align:center">${s.signal_strength || ''}</div></td>
       <td>
         <span class="score" style="cursor:help;" title="${tooltip}">${s.score}<span class="den">/100</span></span>
-        ${s.regime_score !== undefined && s.regime_score !== s.score ? `<div style="font-size:9px;color:#fb923c;margin-top:2px;font-weight:500;white-space:nowrap;">⚠️ ${s.regime_score} regime-adj</div>` : ''}
+        ${s.regime_score !== undefined && s.regime_score !== s.score ? `<div style="font-size:9px;color:#fb923c;margin-top:2px;font-weight:500;white-space:nowrap;">${s.regime_score < s.score ? '▼' : '▲'} ${s.regime_score} regime-adj</div>` : ''}
       </td>
       <td><div class="price-main">${fmt(s.price)}</div><div class="price-date">● ${s.scanned_date||'Today'} ${s.scanned_time ? '@ ' + s.scanned_time : ''}</div></td>
       <td>${fmt(s.entry)}</td>
