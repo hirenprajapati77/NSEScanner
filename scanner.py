@@ -76,6 +76,9 @@ CFG: Dict = {
     # Liquidity Filter (10 Crore INR default: 1 Crore = 10,000,000)
     "TURNOVER_LIMIT": float(os.getenv("TURNOVER_LIMIT", "100000000")),
     "USE_CACHE_ONLY": False,
+    # default MIN_PRICE set to 50.0 INR and MAX_52W_AGE set to 180 days
+    "MIN_PRICE":      float(os.getenv("MIN_PRICE",      "50.0")),
+    "MAX_52W_AGE":    int(os.getenv("MAX_52W_AGE",    "180")),
 }
 
 
@@ -673,7 +676,7 @@ def analyse(
         close   = float(last["close"])
 
         # Minimum Price Filter
-        min_price = float(cfg.get("MIN_PRICE", 20.0))
+        min_price = float(cfg.get("MIN_PRICE", 50.0))
         if close < min_price:
             log.info(f"🚩 {ticker}: Rejected due to low price (₹{close:.2f} < ₹{min_price:.2f})")
             if explain_skip:
@@ -760,6 +763,18 @@ def analyse(
         hv_high_idx     = lookback["high"].idxmax()
         hv_date         = hv_high_idx.strftime("%d-%b-%Y")
         days_since_high = int((datetime.now().date() - hv_high_idx.date()).days)
+
+        # Enforce maximum 52-week age limit (e.g., ignore setups older than 180 trading days)
+        max_days = int(cfg.get("MAX_52W_AGE", 180))
+        if days_since_high > max_days:
+            log.info(f"🚩 {ticker}: Rejected due to stale 52W age ({days_since_high} days > {max_days} days)")
+            if explain_skip:
+                return {
+                    "symbol": ticker.replace(".NS", ""),
+                    "skipped": True,
+                    "reason": f"Stale 52W age ({days_since_high} days > {max_days} days)"
+                }
+            return None
 
         range_52w = hv_high - hv_low
         if range_52w <= 0:
@@ -867,7 +882,7 @@ def analyse(
         # Volume percentile (last 20 days)
         vol_percentile = round(float((df["volume"].iloc[-20:] < volume).mean() * 100), 2)
 
-        rs_score = 10 if rs_pct > 0 else -10
+        rs_score = 10 if (not bearish and rs_pct > 0) or (bearish and rs_pct < 0) else -10
 
         # Relative Strength (percentage distance of close relative to 200 EMA)
         ema200_val = float(last["ema200"])
@@ -1057,6 +1072,24 @@ def run_scan(
             result["raw_score"]    = raw_score
             result["regime"]       = regime_name
             result["regime_emoji"] = regime_data.get("emoji", "⚖️")
+
+            # Recalculate confidence grade and signal strength based on adjusted score
+            score = result["score"]
+            if score >= 95:
+                result["confidence"] = "A+"
+                result["signal_strength"] = "Institutional Strong"
+            elif score >= 85:
+                result["confidence"] = "A"
+                result["signal_strength"] = "Strong Momentum"
+            elif score >= 70:
+                result["confidence"] = "B"
+                result["signal_strength"] = "Moderate Setup"
+            elif score >= 55:
+                result["confidence"] = "C"
+                result["signal_strength"] = "Weak Signal"
+            else:
+                result["confidence"] = "D"
+                result["signal_strength"] = "Avoid"
 
             # Re-apply MIN_SCORE filter after regime adjustment
             min_score = (cfg_override or {}).get("MIN_SCORE", CFG["MIN_SCORE"])
@@ -1428,7 +1461,8 @@ def main(
 
     while True:
         log.info(f"🔎 Starting {mode} scan — {len(tickers)} stocks")
-        signals = run_scan(tickers, bearish=bearish)
+        scan_res = run_scan(tickers, bearish=bearish)
+        signals = scan_res["signals"] if isinstance(scan_res, dict) else scan_res
         print_table(signals)
         save_csv(signals)
         if signals:

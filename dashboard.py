@@ -242,7 +242,7 @@ def _do_scan(params: dict, scan_id: str) -> None:
         "TWILIO_TO":      params.get("twilio_to",    _load_config().get("twilio_to",   "")),
         "TURNOVER_LIMIT": float(params.get("turnover_limit", CFG["TURNOVER_LIMIT"])),
         "USE_CACHE_ONLY": bool(params.get("use_cache", False)),
-        "MIN_PRICE":      float(params.get("min_price", 20.0)),
+        "MIN_PRICE":      float(params.get("min_price", 50.0)),
     }
 
     scan_mode = params.get("scan_mode", "bullish")   # bullish | bearish | both
@@ -1088,8 +1088,8 @@ tbody tr:hover td:first-child {
     <label style="margin-left:8px">Min Price:</label>
     <select id="minPrice" onchange="savePrefs()">
       <option value="0">Any</option>
-      <option value="20" selected>₹20+</option>
-      <option value="50">₹50+</option>
+      <option value="20">₹20+</option>
+      <option value="50" selected>₹50+</option>
       <option value="100">₹100+</option>
       <option value="200">₹200+</option>
     </select>
