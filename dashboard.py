@@ -169,6 +169,7 @@ def _bootstrap_cache() -> None:
             signals.append({
                 "symbol":          _safe(r, "Symbol"),
                 "score":           _safe(r, "Score",          int,   0),
+                "regime_score":    _safe(r, "Regime_Score",   int,   _safe(r, "Score", int, 0)),
                 "confidence":      _safe(r, "Confidence",     str,   "B"),
                 "signal_strength": _safe(r, "Strength",       str,   "Moderate"),
                 "signal_type":     _safe(r, "Signal",         str,   "Bull"),
@@ -518,6 +519,7 @@ def export_csv():
         rows.append({
             "Symbol":          r.get("symbol"),
             "Score":           r.get("score"),
+            "Regime_Score":    r.get("regime_score", r.get("score")),
             "Confidence":      r.get("confidence", "B"),
             "Strength":        r.get("signal_strength", "Moderate"),
             "Signal":          r.get("signal_type", "Bull"),
@@ -1007,6 +1009,15 @@ tbody tr:hover td:first-child {
     </button>
   </div>
 
+  <!-- Strong/Bear market warning banner -->
+  <div id="bearWarning" style="background:#1a0000;border-left:3px solid #f87171;
+    padding:8px 20px;font-size:12px;color:#fca5a5;display:none;
+    align-items:center;gap:8px;border-bottom:1px solid var(--border)">
+    ⚠️ STRONG BEAR market active — Bullish signals shown with reduced confidence.
+    Consider bearish setups or staying in cash.
+    <span style="margin-left:auto;cursor:pointer" onclick="this.parentElement.style.display='none'">✕</span>
+  </div>
+
   <!-- Cold-start banner -->
   <div class="cold-banner" id="coldBanner">
     <i class="ti ti-clock-pause"></i>
@@ -1391,6 +1402,20 @@ function loadRegime() {
 
       atr.textContent    = (d.atr_pct || 0).toFixed(2) + '%';
       high.textContent   = '-' + (d.pct_from_high || 0).toFixed(1) + '%';
+
+      // Store globally for other JS features
+      window.niftyRegime = d.regime;
+
+      // Display/hide bearWarning banner
+      const bearWarn = document.getElementById('bearWarning');
+      if (bearWarn) {
+        if (d.regime === 'STRONG_BEAR' || d.regime === 'BEAR') {
+          bearWarn.style.display = 'flex';
+          bearWarn.innerHTML = `⚠️ <b>${d.label.toUpperCase()}</b> market active — Bullish signals shown with reduced confidence. Consider bearish setups or staying in cash. <span style="margin-left:auto;cursor:pointer" onclick="this.parentElement.style.display='none'">✕</span>`;
+        } else {
+          bearWarn.style.display = 'none';
+        }
+      }
     })
     .catch(() => {});
 }
@@ -1595,7 +1620,11 @@ function render(){
     const rPct=s.hv_high!==s.hv_low?Math.min(100,Math.max(0,((s.price-s.hv_low)/(s.hv_high-s.hv_low))*100)):50;
     const isFav=watchlist.includes(s.symbol);
     const distVal = s.dist_from_entry !== undefined ? s.dist_from_entry : (s.entry ? ((s.price - s.entry) / s.entry) * 100 : 0);
-    const sigBadge=isBull?`<span class="sig-buy">BUY</span>`:`<span class="sig-sell">SELL</span>`;
+    const regime = window.niftyRegime || 'NEUTRAL';
+    const bearBadge = (isBull && (regime === 'STRONG_BEAR' || regime === 'BEAR'))
+      ? '<span style="background:#450a0a;color:#f87171;border-radius:4px;padding:2px 6px;font-size:9px;font-weight:600;margin-left:4px;display:inline-block;vertical-align:middle;">⚠️ BEAR MKT</span>'
+      : '';
+    const sigBadge=(isBull?`<span class="sig-buy">BUY</span>`:`<span class="sig-sell">SELL</span>`) + bearBadge;
     
     // Score breakdown tooltip calculation
     const isBearish = s.signal_type === 'Bear';
@@ -1709,7 +1738,10 @@ function render(){
         </div>
       </td>
       <td style="cursor:help" title="${tooltip}"><div style="text-align:center">${confBadge}</div><div style="font-size:9px;color:var(--muted);margin-top:4px;text-align:center">${s.signal_strength || ''}</div></td>
-      <td><span class="score" style="cursor:help;" title="${tooltip}">${s.score}<span class="den">/100</span></span></td>
+      <td>
+        <span class="score" style="cursor:help;" title="${tooltip}">${s.score}<span class="den">/100</span></span>
+        ${s.regime_score !== undefined && s.regime_score !== s.score ? `<div style="font-size:9px;color:#fb923c;margin-top:2px;font-weight:500;white-space:nowrap;">⚠️ ${s.regime_score} regime-adj</div>` : ''}
+      </td>
       <td><div class="price-main">${fmt(s.price)}</div><div class="price-date">● ${s.scanned_date||'Today'} ${s.scanned_time ? '@ ' + s.scanned_time : ''}</div></td>
       <td>${fmt(s.entry)}</td>
       <td><span class="${distVal > 2.0 ? 'dn' : distVal < -2.0 ? 'dn' : 'up'}" style="font-weight:600">${distVal > 0 ? '+' : ''}${distVal.toFixed(1)}%</span></td>

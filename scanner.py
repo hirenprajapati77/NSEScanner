@@ -1063,37 +1063,18 @@ def run_scan(
         is_hit = _get_cache_hit(ticker)
         result = analyse(ticker, bearish=bearish, cfg_override=cfg_override)
         if result:
-            raw_score = result["score"]
-            result["score"] = adjust_score_for_regime(
-                raw_score,
+            result["raw_score"] = result["score"]  # keep original raw score
+            result["regime_score"] = adjust_score_for_regime(
+                result["score"],
                 regime=regime_name,
                 is_bearish=(result.get("signal_type") == "Bear"),
             )
-            result["raw_score"]    = raw_score
             result["regime"]       = regime_name
             result["regime_emoji"] = regime_data.get("emoji", "⚖️")
 
-            # Recalculate confidence grade and signal strength based on adjusted score
-            score = result["score"]
-            if score >= 95:
-                result["confidence"] = "A+"
-                result["signal_strength"] = "Institutional Strong"
-            elif score >= 85:
-                result["confidence"] = "A"
-                result["signal_strength"] = "Strong Momentum"
-            elif score >= 70:
-                result["confidence"] = "B"
-                result["signal_strength"] = "Moderate Setup"
-            elif score >= 55:
-                result["confidence"] = "C"
-                result["signal_strength"] = "Weak Signal"
-            else:
-                result["confidence"] = "D"
-                result["signal_strength"] = "Avoid"
-
-            # Re-apply MIN_SCORE filter after regime adjustment
+            # Filter on RAW score, not regime-adjusted
             min_score = (cfg_override or {}).get("MIN_SCORE", CFG["MIN_SCORE"])
-            if result["score"] < min_score:
+            if result["raw_score"] < min_score:
                 result = None
         
         with lock:
@@ -1411,6 +1392,7 @@ def save_csv(signals: List[Dict]) -> str:
         rows.append({
             "Symbol":          r["symbol"],
             "Score":           r["score"],
+            "Regime_Score":    r.get("regime_score", r["score"]),
             "Confidence":      r["confidence"],
             "Strength":        r["signal_strength"],
             "Signal":          r.get("signal_type", "Bull"),
