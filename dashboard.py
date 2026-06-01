@@ -3278,14 +3278,19 @@ function render(isTick = false){
 
       const isStale = Math.abs(distVal) > 5.0;
       const pullbackEntry = isBull ? pivots * 1.025 : pivots * 0.975;
+      const displayDist = isStale ? ((s.price - pullbackEntry) / pullbackEntry) * 100 : distVal;
+
       const entryLabel = isStale 
-        ? `<span style="color:#fbbf24; font-weight:700">₹${pullbackEntry.toFixed(1)}</span><br><span style="font-size:8.5px;color:#f87171;font-weight:800">(Pullback)</span>` 
-        : `<span style="color:var(--text-primary)">₹${pivots.toFixed(1)}</span><br><span style="font-size:8.5px;color:var(--text-muted)">(Pivot)</span>`;
+        ? `<span style="font-size:11px;font-weight:600;color:var(--text-muted)">₹${pivots.toFixed(1)}</span> ` +
+          `<span style="color:#fbbf24;font-weight:800">→ ₹${pullbackEntry.toFixed(1)}</span>` +
+          `<br><span style="font-size:8.5px;color:#fbbf24;font-weight:800;cursor:help;text-decoration:underline dashed" title="Pivot updated to ₹${pullbackEntry.toFixed(1)} (today's H3 pullback)">(updated) ⓘ</span>`
+        : `<span style="color:var(--text-primary);font-weight:700">₹${pivots.toFixed(1)}</span>` +
+          `<br><span style="font-size:8.5px;color:var(--text-muted)">(Pivot)</span>`;
 
       const statusBadge = (() => {
-        if (Math.abs(distVal) <= 2.0) {
+        if (Math.abs(displayDist) <= 2.0) {
           return `<span style="background:rgba(16,185,129,0.15); color:#34d399; font-weight:800; padding:3px 8px; border-radius:4px; border:1px solid rgba(16,185,129,0.3); font-size:9.5px">FRESH ✅</span>`;
-        } else if (Math.abs(distVal) <= 5.0) {
+        } else if (Math.abs(displayDist) <= 5.0) {
           return `<span style="background:rgba(245,158,11,0.15); color:#fbbf24; font-weight:800; padding:3px 8px; border-radius:4px; border:1px solid rgba(245,158,11,0.3); font-size:9.5px">EXTENDED ⚠️</span>`;
         } else {
           return `<span style="background:rgba(244,63,94,0.15); color:#f87171; font-weight:800; padding:3px 8px; border-radius:4px; border:1px solid rgba(244,63,94,0.3); font-size:9.5px">STALE ❌</span>`;
@@ -3324,7 +3329,7 @@ function render(isTick = false){
         </span></td>
         <td><div class="price-main">₹${s.price.toLocaleString("en-IN", {minimumFractionDigits: 2})}</div><div class="price-date">● ${s.scanned_date || 'Today'}</div></td>
         <td style="font-family:var(--font-mono); text-align:center">${entryLabel}</td>
-        <td><span class="${distVal > 2.0 ? 'dn' : distVal < -2.0 ? 'dn' : 'up'}" style="font-weight:700">${distVal > 0 ? '+' : ''}${distVal.toFixed(1)}%</span></td>
+        <td><span class="${displayDist > 2.0 ? 'dn' : displayDist < -2.0 ? 'dn' : 'up'}" style="font-weight:700">${displayDist > 0 ? '+' : ''}${displayDist.toFixed(1)}%</span></td>
         <td style="text-align:center">${statusBadge}</td>
         <td class="sl">₹${stopLosses.toFixed(1)}</td>
         <td class="cam-levels">
