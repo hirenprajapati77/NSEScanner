@@ -1823,8 +1823,8 @@ tbody tr:hover td:first-child {
           <div class="mt-2 bg-amber-950/40 border border-amber-900/60 rounded-lg p-2 flex items-start gap-1.5" id="oi-trap-box">
             <i class="ti ti-shield-alert" style="color:var(--pro-watch);font-size:14px;margin-top:2px"></i>
             <div>
-              <div style="font-size:10px;font-weight:800;color:#fbbf24">CE WRITERS TRAPPED</div>
-              <div style="font-size:9px;color:#f59e0b;line-height:1.2;margin-top:2px">Short covering rally likely at 22,500!</div>
+              <div style="font-size:10px;font-weight:800;color:#fbbf24" id="oi-trap-title">CE WRITERS TRAPPED</div>
+              <div style="font-size:9px;color:#f59e0b;line-height:1.2;margin-top:2px" id="oi-trap-desc">Short covering rally likely at 22,500!</div>
             </div>
           </div>
         </div>
@@ -2071,6 +2071,7 @@ let activeSector = null;
 let pcrVal = 1.24;
 let fiiNetVal = -1240;
 let diiNetVal = 2180;
+let niftyClosePrice = 23450;
 
 // Sector Data structures (10 core NSE F&O sectors)
 const initialSectors = [
@@ -2088,12 +2089,24 @@ const initialSectors = [
 let activeSectors = [...initialSectors];
 
 const sectorMapping = {
+  // Original mock stocks
   "HDFCBANK": "Banking", "SBIN": "Banking",
   "RELIANCE": "Energy", "COALINDIA": "Metals",
   "TATAMOTORS": "Auto", "MARUTI": "Auto",
   "INFY": "IT", "WIPRO": "IT",
   "DRREDDY": "Pharma", "DLF": "Realty",
-  "ADANIENT": "Infra", "ITC": "FMCG"
+  "ADANIENT": "Infra", "ITC": "FMCG",
+  
+  // Real database scanned stocks
+  "CHENNPETRO": "Energy", "ATGL": "Energy",
+  "CUB": "Banking", "FEDERALBNK": "Banking", "RBLBANK": "Banking", "BANDHANBNK": "Banking",
+  "TATASTEEL": "Metals",
+  "BHARATFORG": "Auto", "MOTHERSON": "Auto",
+  "OFSS": "IT",
+  "ALKEM": "Pharma", "ZYDUSLIFE": "Pharma",
+  "SUNTV": "Media",
+  "PIDILITIND": "FMCG", "TATACHEM": "FMCG",
+  "SOLARINDS": "Infra", "SIEMENS": "Infra", "LT": "Infra", "INDUSTOWER": "Infra"
 };
 
 // Helpers
@@ -2158,6 +2171,8 @@ function loadRegime() {
 
       nifty.textContent = '₹' + (d.nifty_close || 0).toLocaleString('en-IN', {maximumFractionDigits:2});
       nifty.style.color = d.color;
+      niftyClosePrice = d.nifty_close || 23450;
+      updateSidebarWidgets();
 
       const b = d.breadth || 50;
       breadth.textContent = b + '% above EMA50';
@@ -2363,6 +2378,31 @@ function updateSidebarWidgets() {
     pcrEl.textContent = pcrVal.toFixed(2);
     pcrEl.className = pcrVal >= 1.2 ? 'up' : pcrVal <= 0.8 ? 'dn' : 'neutral';
   }
+  
+  // 1b. Dynamic Options Chain strikes aligned with current Nifty close
+  const baseStrike = Math.round(niftyClosePrice / 100) * 100;
+  const maxPainVal = baseStrike;
+  const resistanceVal = baseStrike + 100;
+  const supportVal = baseStrike - 200;
+
+  const mpEl = document.getElementById('oi-maxpain');
+  if (mpEl) mpEl.textContent = maxPainVal.toLocaleString('en-IN');
+
+  const resEl = document.getElementById('oi-resistance');
+  if (resEl) resEl.textContent = resistanceVal.toLocaleString('en-IN');
+
+  const supEl = document.getElementById('oi-support');
+  if (supEl) supEl.textContent = supportVal.toLocaleString('en-IN');
+
+  const trapTitle = document.getElementById('oi-trap-title');
+  if (trapTitle) {
+    trapTitle.textContent = `${pcrVal > 1.25 ? 'CE' : 'PE'} WRITERS TRAPPED`;
+  }
+  const trapDesc = document.getElementById('oi-trap-desc');
+  if (trapDesc) {
+    trapDesc.textContent = `Short covering rally likely at ${resistanceVal.toLocaleString('en-IN')}!`;
+  }
+
   const trapBox = document.getElementById('oi-trap-box');
   if (trapBox) {
     trapBox.style.display = pcrVal > 1.25 ? 'flex' : 'none';
