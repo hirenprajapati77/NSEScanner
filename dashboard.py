@@ -2428,12 +2428,12 @@ let _closeTradeId = null;
 function openCloseModal(id, entry, sl, symbol) {
   _closeTradeId = id;
   const exit = prompt(
-    symbol + ' — Enter Exit Price:\n' +
+    symbol + ' — Enter Exit Price:\\\\n' +
     'Entry: ₹' + entry + ' | SL: ₹' + sl
   );
   if (!exit) return;
   const reason = prompt(
-    'Exit reason?\n1=T1_HIT  2=T2_HIT  3=SL_HIT  4=MANUAL  5=EXPIRED'
+    'Exit reason?\\\\n1=T1_HIT  2=T2_HIT  3=SL_HIT  4=MANUAL  5=EXPIRED'
   );
   const reasonMap = {
     '1':'T1_HIT','2':'T2_HIT','3':'SL_HIT','4':'MANUAL','5':'EXPIRED'
