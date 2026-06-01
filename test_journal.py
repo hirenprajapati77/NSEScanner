@@ -9,6 +9,10 @@ import sqlite3
 # Ensure we can import journal.py
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
+import journal
+# Isolate test database to avoid polluting production database
+journal.DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "scanner_test.db")
+
 from journal import init_db, add_trade, close_trade, get_trades, get_scorecard, delete_trade, DB_PATH
 
 def run_tests():
@@ -208,6 +212,15 @@ def run_tests():
         sys.exit(1)
     
     print("[SUCCESS] delete_trade() cleanup verified.")
+    
+    # Close connections so file can be deleted
+    conn.close()
+    try:
+        os.remove(DB_PATH)
+        print("[SUCCESS] scanner_test.db file removed successfully.")
+    except Exception as e:
+        print(f"[WARNING] Could not remove scanner_test.db: {e}")
+
     print("\n=== ALL TESTS PASSED SUCCESSFULLY! journal.py is 100% production-grade and ready. ===")
 
 if __name__ == "__main__":
