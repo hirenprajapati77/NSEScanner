@@ -21,6 +21,9 @@ import uuid
 from regime import get_regime
 import copy
 from datetime import datetime
+from journal import init_db, add_trade, close_trade, \
+                    get_trades, delete_trade, get_scorecard
+import csv
 
 import pandas as pd
 from flask import Flask, jsonify, render_template_string, request, send_file
@@ -220,6 +223,7 @@ def _bootstrap_cache() -> None:
 # ── Startup initialisation ───────────────────────────────────
 _load_state_from_disk()
 _bootstrap_cache()
+init_db()
 
 
 # ─────────────────────────────────────────────────────────────
@@ -629,6 +633,61 @@ def regime_route():
     return jsonify(get_regime(force_refresh=force))
 
 
+@app.route("/journal", methods=["GET"])
+def journal_get():
+    outcome = request.args.get("outcome")   # OPEN/WIN/LOSS/all
+    trades  = get_trades(outcome=outcome if outcome != "all" else None)
+    return jsonify({"trades": trades, "count": len(trades)})
+
+
+@app.route("/journal", methods=["POST"])
+def journal_add():
+    data = request.get_json(force=True, silent=True) or {}
+    if not data.get("symbol") or not data.get("entry_price"):
+        return jsonify({"error": "symbol and entry_price required"}), 400
+    trade_id = add_trade(data)
+    return jsonify({"ok": True, "id": trade_id})
+
+
+@app.route("/journal/<int:trade_id>", methods=["PUT"])
+def journal_close(trade_id):
+    data   = request.get_json(force=True, silent=True) or {}
+    result = close_trade(trade_id, data)
+    if "error" in result:
+        return jsonify(result), 404
+    return jsonify({"ok": True, **result})
+
+
+@app.route("/journal/<int:trade_id>", methods=["DELETE"])
+def journal_delete(trade_id):
+    delete_trade(trade_id)
+    return jsonify({"ok": True})
+
+
+@app.route("/journal/scorecard")
+def journal_scorecard():
+    return jsonify(get_scorecard())
+
+
+@app.route("/journal/export")
+def journal_export():
+    trades = get_trades()
+    if not trades:
+        return jsonify({"error": "No trades to export"}), 404
+    buf = io.StringIO()
+    writer = csv.DictWriter(buf, fieldnames=trades[0].keys())
+    writer.writeheader()
+    writer.writerows(trades)
+    buf.seek(0)
+    fname = f"trade_journal_{datetime.now().strftime('%Y%m%d')}.csv"
+    return send_file(
+        io.BytesIO(buf.getvalue().encode()),
+        mimetype="text/csv",
+        as_attachment=True,
+        download_name=fname,
+    )
+
+
 # ─────────────────────────────────────────────────────────────
 # HTML DASHBOARD (inline template with Dynamic Upgrades)
 # ─────────────────────────────────────────────────────────────
@@ -929,6 +988,9 @@ tbody tr:hover td:first-child {
   .m-show-inline { display: inline !important; }
   .btn-help { padding: 6px 10px; font-size: 10px; }
 }
+.sc-item{display:flex;flex-direction:column;align-items:center;gap:1px}
+.sc-lbl{color:#4b5563;font-size:9px;font-weight:500;letter-spacing:.04em}
+.sc-val{color:#f9fafb;font-weight:700;font-size:13px}
 </style>
 </head>
 <body>
@@ -1009,6 +1071,41 @@ tbody tr:hover td:first-child {
     </button>
   </div>
 
+  <!-- Scorecard Bar -->
+  <div id="scorecardBar" style="display:flex;align-items:center;
+    gap:20px;flex-wrap:wrap;padding:8px 20px;
+    background:#080c14;border-bottom:1px solid #1f2937;font-size:11px">
+
+    <span style="color:#6b7280;font-weight:600;font-size:10px;
+      letter-spacing:.06em">STRATEGY SCORECARD</span>
+
+    <div class="sc-item">
+      <span class="sc-lbl">Trades</span>
+      <span class="sc-val" id="sc-total">—</span>
+    </div>
+    <div class="sc-item">
+      <span class="sc-lbl">Win Rate</span>
+      <span class="sc-val" id="sc-winrate" style="color:#4ade80">—</span>
+    </div>
+    <div class="sc-item">
+      <span class="sc-lbl">Avg R:R</span>
+      <span class="sc-val" id="sc-rr">—</span>
+    </div>
+    <div class="sc-item">
+      <span class="sc-lbl">Profit Factor</span>
+      <span class="sc-val" id="sc-pf">—</span>
+    </div>
+    <div class="sc-item">
+      <span class="sc-lbl">Total P&L</span>
+      <span class="sc-val" id="sc-pnl">—</span>
+    </div>
+    <div class="sc-item">
+      <span class="sc-lbl">Open</span>
+      <span class="sc-val" id="sc-open"
+        style="color:#fbbf24">—</span>
+    </div>
+  </div>
+
   <!-- Strong/Bear market warning banner -->
   <div id="bearWarning" style="background:#1a0000;border-left:3px solid #f87171;
     padding:8px 20px;font-size:12px;color:#fca5a5;display:none;
@@ -1061,6 +1158,11 @@ tbody tr:hover td:first-child {
     <div class="tab" id="tab-watchlist" onclick="setTab('watchlist')">
       <i class="ti ti-star" style="font-size:12px;color:var(--yellow)"></i>
       Watchlist <span class="cnt" id="cnt-watchlist" style="background:#374151;color:var(--muted)">0</span>
+    </div>
+    <div class="tab" id="tab-journal" onclick="setTab('journal')">
+      <i class="ti ti-notebook" style="font-size:12px;color:#a78bfa"></i>
+      Trade Journal
+      <span class="cnt" id="cnt-journal" style="background:#4c1d95;color:#ddd6fe">0</span>
     </div>
   </div>
 
@@ -1167,11 +1269,12 @@ tbody tr:hover td:first-child {
         <th class="m-hide" title="Trend alignment indicators for 10, 20, 50, and 200 Exponential Moving Averages">EMA ✓</th>
         <th onclick="sortBy('vol_ratio')" class="m-hide" title="Volume spike ratio compared to rolling N-day average volume (minimum 2.0x required)">VOL <span class="sort-icon" id="si-vol_ratio"><i class="ti ti-selector"></i></span></th>
         <th onclick="sortBy('candle')" class="m-hide" title="Daily Candlestick Pattern Direction (Bull / Bear)">CANDLE <span class="sort-icon" id="si-candle"><i class="ti ti-selector"></i></span></th>
+        <th title="Log trade to journal">TRADE</th>
         <th class="m-hide" title="Toggle Watchlist starred status"><i class="ti ti-star"></i> WATCH</th>
       </tr></thead>
       <tbody id="tblBody">
         <tr>
-          <td colspan="17" class="empty-state">
+          <td colspan="18" class="empty-state">
             <i class="ti ti-chart-candlestick" style="font-size:32px;color:#374151;display:block;margin-bottom:8px"></i>
             No results yet — configure filters and run a scan
           </td>
@@ -1303,6 +1406,74 @@ tbody tr:hover td:first-child {
       
       <div style="text-align:right;margin-top:16px">
         <button class="btn-cancel" onclick="closeHelpModal()" style="padding:8px 20px;font-size:12px;margin:0">Done</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Log Trade Modal -->
+  <div class="modal-bg" id="journalModalBg">
+    <div class="modal" style="width:500px">
+      <h3><i class="ti ti-notebook" style="color:#a78bfa"></i>
+        Log Trade — <span id="jm-symbol"></span></h3>
+
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:12px">
+        <div>
+          <label>Trading Capital (₹)</label>
+          <input type="number" id="jm-capital" value="100000"
+            oninput="calcJournalSizer()" placeholder="100000">
+        </div>
+        <div>
+          <label>Risk per Trade (%)</label>
+          <input type="number" id="jm-risk-pct" value="1"
+            oninput="calcJournalSizer()" step="0.1" placeholder="1">
+        </div>
+        <div>
+          <label>Entry Price (₹)</label>
+          <input type="number" id="jm-entry" oninput="calcJournalSizer()">
+        </div>
+        <div>
+          <label>Stop Loss (₹)</label>
+          <input type="number" id="jm-sl" oninput="calcJournalSizer()">
+        </div>
+      </div>
+
+      <!-- Auto-calculated position sizing -->
+      <div style="background:#111827;border-radius:8px;padding:12px;
+        margin-top:14px;display:grid;grid-template-columns:repeat(4,1fr);gap:8px">
+        <div style="text-align:center">
+          <div style="color:#6b7280;font-size:10px">RISK AMOUNT</div>
+          <div id="jm-risk-amt" style="color:#f87171;font-weight:700;font-size:14px">₹0</div>
+        </div>
+        <div style="text-align:center">
+          <div style="color:#6b7280;font-size:10px">SHARES TO BUY</div>
+          <div id="jm-qty" style="color:#60a5fa;font-weight:700;font-size:14px">0</div>
+        </div>
+        <div style="text-align:center">
+          <div style="color:#6b7280;font-size:10px">TRADE VALUE</div>
+          <div id="jm-value" style="color:#4ade80;font-weight:700;font-size:14px">₹0</div>
+        </div>
+        <div style="text-align:center">
+          <div style="color:#6b7280;font-size:10px">SL DISTANCE</div>
+          <div id="jm-sl-dist" style="color:#fbbf24;font-weight:700;font-size:14px">0%</div>
+        </div>
+      </div>
+
+      <div style="margin-top:12px">
+        <label>Notes (optional)</label>
+        <input type="text" id="jm-notes"
+          placeholder="Why are you taking this trade?">
+      </div>
+
+      <div class="mrow" style="margin-top:16px">
+        <button class="btn-save" onclick="submitJournalLog()"
+          style="background:#5b21b6">
+          <i class="ti ti-notebook"></i> Log This Trade
+        </button>
+        <button class="btn-cancel"
+          onclick="document.getElementById('journalModalBg')
+            .classList.remove('show')">
+          Cancel
+        </button>
       </div>
     </div>
   </div>
@@ -1575,6 +1746,10 @@ function updateCounts(){
 
 // ── Main render ───────────────────────────────────────────
 function render(){
+  if (activeTab === 'journal') {
+    renderJournal();
+    return;
+  }
   const tbody=document.getElementById('tblBody');
   const srch=document.getElementById('tickerSearch').value.toLowerCase();
   const vm=parseFloat(document.getElementById('volMult').value);
@@ -1787,6 +1962,27 @@ function render(){
         <br><span style="font-size:10px;color:var(--muted)">${s.vol_ratio.toFixed(2)}x</span>
       </td>
       <td class="m-hide"><span class="${s.candle==='Bull'?'c-bull':'c-bear'}">${s.candle==='Bull'?'🟢 Green':'🔴 Red'} Candle</span></td>
+      <td>
+        <button onclick="logTradeFromRow(event, ${JSON.stringify({
+          symbol:      s.symbol,
+          signal_type: s.signal_type,
+          conf_grade:  s.conf_grade || 'A',
+          raw_score:   s.raw_score  || s.score,
+          regime_score:s.score,
+          regime:      s.regime     || 'NEUTRAL',
+          entry_price: s.entry,
+          stop_loss:   s.stop_loss,
+          target_t1:   s.target,
+          target_t2:   s.target2 || s.target,
+          risk_pct:    s.risk_percentage || s.downside,
+          rr_ratio:    s.rr,
+        }).replace(/"/g,"'")})"
+        style="background:#4c1d95;color:#ddd6fe;border:none;
+          border-radius:4px;padding:3px 8px;font-size:10px;
+          cursor:pointer;font-weight:600;white-space:nowrap">
+          + Log
+        </button>
+      </td>
       <td class="m-hide"><i class="star-icon ti ti-star" style="color:${isFav?'var(--yellow)':'#4b5563'}"
         onclick="toggleWatch('${s.symbol}',this); event.stopPropagation();"></i></td>
     </tr>`;
@@ -1851,6 +2047,7 @@ function checkStatus(){
         stocks=preprocess(d.signals);
         document.getElementById('lastScan').textContent=d.last_scan?'Last scan: '+d.last_scan:'';
         updateCounts(); 
+        loadScorecard();
         
         // Auto-switch from 'entry' if empty to prevent a confusing blank list
         if (activeTab === 'entry' && parseInt(document.getElementById('cnt-entry').textContent) === 0) {
@@ -2148,6 +2345,232 @@ function detectColdStart(){
   }
   localStorage.setItem(key,now);
 }
+
+// ── Journal state ──────────────────────────────────────
+let _jmData = {};   // temp storage while modal is open
+
+// ── Open log modal from row button ────────────────────
+function logTradeFromRow(event, data) {
+  event.stopPropagation();   // don't trigger row click
+  _jmData = data;
+  document.getElementById('jm-symbol').textContent  = data.symbol;
+  document.getElementById('jm-entry').value = data.entry_price;
+  document.getElementById('jm-sl').value    = data.stop_loss;
+  calcJournalSizer();
+  document.getElementById('journalModalBg').classList.add('show');
+}
+
+// ── Position sizing calculator inside modal ────────────
+function calcJournalSizer() {
+  const capital  = parseFloat(document.getElementById('jm-capital').value) || 0;
+  const riskPct  = parseFloat(document.getElementById('jm-risk-pct').value) || 1;
+  const entry    = parseFloat(document.getElementById('jm-entry').value)   || 0;
+  const sl       = parseFloat(document.getElementById('jm-sl').value)       || 0;
+
+  if (!entry || !sl || entry === sl) {
+    document.getElementById('jm-qty').textContent    = '0';
+    document.getElementById('jm-value').textContent  = '₹0';
+    document.getElementById('jm-risk-amt').textContent = '₹0';
+    document.getElementById('jm-sl-dist').textContent = '0%';
+    return;
+  }
+
+  const riskAmt   = capital * (riskPct / 100);
+  const slDist    = Math.abs(entry - sl);
+  const qty       = Math.floor(riskAmt / slDist);
+  const tradeVal  = qty * entry;
+  const slDistPct = ((slDist / entry) * 100).toFixed(2);
+
+  document.getElementById('jm-risk-amt').textContent =
+    '₹' + riskAmt.toLocaleString('en-IN', {maximumFractionDigits:0});
+  document.getElementById('jm-qty').textContent  = qty;
+  document.getElementById('jm-value').textContent =
+    '₹' + tradeVal.toLocaleString('en-IN', {maximumFractionDigits:0});
+  document.getElementById('jm-sl-dist').textContent = slDistPct + '%';
+
+  // Store for submit
+  _jmData._qty        = qty;
+  _jmData._tradeVal   = tradeVal;
+  _jmData._riskAmt    = riskAmt;
+  _jmData._capital    = capital;
+}
+
+// ── Submit log trade ───────────────────────────────────
+function submitJournalLog() {
+  const payload = {
+    ..._jmData,
+    entry_price:  parseFloat(document.getElementById('jm-entry').value),
+    stop_loss:    parseFloat(document.getElementById('jm-sl').value),
+    actual_entry: parseFloat(document.getElementById('jm-entry').value),
+    capital:      _jmData._capital    || 0,
+    quantity:     _jmData._qty        || 0,
+    trade_value:  _jmData._tradeVal   || 0,
+    risk_amount:  _jmData._riskAmt    || 0,
+    notes:        document.getElementById('jm-notes').value,
+    signal_date:  new Date().toISOString().split('T')[0],
+  };
+
+  fetch('/journal', {
+    method:  'POST',
+    headers: {'Content-Type':'application/json'},
+    body:    JSON.stringify(payload),
+  }).then(r => r.json()).then(d => {
+    if (d.error) { showToast(d.error, true); return; }
+    showToast(_jmData.symbol + ' trade logged! ID: ' + d.id);
+    document.getElementById('journalModalBg').classList.remove('show');
+    loadScorecard();
+    if (activeTab === 'journal') renderJournal();
+  }).catch(() => showToast('Failed to log trade.', true));
+}
+
+// ── Close trade modal ──────────────────────────────────
+let _closeTradeId = null;
+function openCloseModal(id, entry, sl, symbol) {
+  _closeTradeId = id;
+  const exit = prompt(
+    symbol + ' — Enter Exit Price:\n' +
+    'Entry: ₹' + entry + ' | SL: ₹' + sl
+  );
+  if (!exit) return;
+  const reason = prompt(
+    'Exit reason?\n1=T1_HIT  2=T2_HIT  3=SL_HIT  4=MANUAL  5=EXPIRED'
+  );
+  const reasonMap = {
+    '1':'T1_HIT','2':'T2_HIT','3':'SL_HIT','4':'MANUAL','5':'EXPIRED'
+  };
+  closeTrade(id, parseFloat(exit), reasonMap[reason] || 'MANUAL');
+}
+
+function closeTrade(id, exitPrice, reason) {
+  fetch('/journal/' + id, {
+    method:  'PUT',
+    headers: {'Content-Type':'application/json'},
+    body:    JSON.stringify({
+      actual_exit: exitPrice,
+      exit_reason: reason,
+      exit_date:   new Date().toISOString().split('T')[0],
+    }),
+  }).then(r => r.json()).then(d => {
+    if (d.error) { showToast(d.error, true); return; }
+    const emoji = d.outcome === 'WIN' ? '🟢' : '🔴';
+    showToast(emoji + ' Trade closed: ' + d.outcome +
+      ' | P&L: ₹' + (d.pnl_amount||0).toLocaleString('en-IN') +
+      ' | ' + (d.rr_achieved||0).toFixed(2) + 'R');
+    loadScorecard();
+    if (activeTab === 'journal') renderJournal();
+  }).catch(() => showToast('Failed to close trade.', true));
+}
+
+function deleteTrade(id) {
+  if (!confirm('Delete this trade permanently?')) return;
+  fetch('/journal/' + id, {method:'DELETE'})
+    .then(() => { showToast('Trade deleted.'); loadScorecard(); if (activeTab === 'journal') renderJournal(); });
+}
+
+// ── Scorecard loader ───────────────────────────────────
+function loadScorecard() {
+  fetch('/journal/scorecard').then(r => r.json()).then(d => {
+    document.getElementById('sc-total').textContent =
+      d.total + ' (' + d.open + ' open)';
+    document.getElementById('sc-winrate').textContent =
+      d.win_rate + '%';
+    document.getElementById('sc-winrate').style.color =
+      d.win_rate >= 55 ? 'var(--green)'
+      : d.win_rate >= 40 ? 'var(--yellow)' : 'var(--red)';
+    document.getElementById('sc-rr').textContent =
+      d.avg_rr + 'R';
+    document.getElementById('sc-pf').textContent =
+      d.profit_factor;
+    document.getElementById('sc-pf').style.color =
+      d.profit_factor >= 1.5 ? 'var(--green)'
+      : d.profit_factor >= 1  ? 'var(--yellow)' : 'var(--red)';
+    document.getElementById('sc-pnl').textContent =
+      (d.total_pnl >= 0 ? '+' : '') +
+      '₹' + (d.total_pnl||0).toLocaleString('en-IN',
+        {maximumFractionDigits:0});
+    document.getElementById('sc-pnl').style.color =
+      d.total_pnl >= 0 ? 'var(--green)' : 'var(--red)';
+    document.getElementById('sc-open').textContent = d.open;
+    document.getElementById('cnt-journal').textContent = d.total;
+  }).catch(() => {});
+}
+
+function renderJournal() {
+  const tbody = document.getElementById('tblBody');
+  fetch('/journal').then(r => r.json()).then(d => {
+    const trades = d.trades || [];
+    document.getElementById('cnt-journal').textContent = trades.length;
+
+    if (!trades.length) {
+      tbody.innerHTML = `<tr><td colspan="18" class="empty-state">
+        <i class="ti ti-notebook" style="font-size:32px;color:#374151;
+          display:block;margin-bottom:8px"></i>
+        No trades logged yet. Click <b>+ Log</b> on any signal row
+        to start tracking.</td></tr>`;
+      return;
+    }
+
+    tbody.innerHTML = trades.map(t => {
+      const isOpen   = t.outcome === 'OPEN';
+      const isWin    = t.outcome === 'WIN';
+      const isLoss   = t.outcome === 'LOSS';
+      const pnlColor = t.pnl_amount > 0 ? 'var(--green)'
+                     : t.pnl_amount < 0 ? 'var(--red)'
+                     : 'var(--muted)';
+      const outcomeStyle = isWin  ? 'background:#14532d;color:#4ade80'
+                         : isLoss ? 'background:#450a0a;color:#f87171'
+                         : 'background:#374151;color:#fbbf24';
+
+      return `<tr>
+        <td>
+          <span class="sym">${t.symbol}</span><br>
+          <span style="${outcomeStyle};border-radius:4px;padding:2px 7px;
+            font-size:10px;font-weight:600;display:inline-block;margin-top:2px">
+            ${t.outcome}
+          </span>
+        </td>
+        <td style="color:var(--muted)">${t.signal_date}</td>
+        <td><span style="background:#1e3a5f;color:#60a5fa;border-radius:4px;
+          padding:2px 7px;font-size:10px;font-weight:600">${t.conf_grade}</span></td>
+        <td><span class="score">${t.raw_score}<span class="den">/100</span></span></td>
+        <td style="color:var(--blue);font-weight:600">
+          ₹${(t.entry_price||0).toLocaleString('en-IN')}</td>
+        <td style="color:var(--red)">
+          ₹${(t.stop_loss||0).toLocaleString('en-IN')}</td>
+        <td style="color:var(--green)">
+          ₹${(t.target_t1||0).toLocaleString('en-IN')}</td>
+        <td>${t.quantity || '—'}</td>
+        <td style="color:${pnlColor};font-weight:600">
+          ${t.pnl_amount ? (t.pnl_amount > 0 ? '+' : '') +
+            '₹'+t.pnl_amount.toLocaleString('en-IN') : '—'}
+        </td>
+        <td style="color:${pnlColor}">
+          ${t.rr_achieved ? t.rr_achieved.toFixed(2)+'R' : '—'}</td>
+        <td style="color:var(--muted);font-size:11px">${t.regime}</td>
+        <td style="color:var(--muted);font-size:11px">
+          ${t.notes || '—'}</td>
+        <td style="white-space:nowrap">
+          ${isOpen ? `
+          <button onclick="openCloseModal(${t.id}, ${t.entry_price},
+            ${t.stop_loss}, '${t.symbol}')"
+            style="background:#14532d;color:#4ade80;border:none;
+            border-radius:4px;padding:3px 8px;font-size:10px;cursor:pointer;
+            font-weight:600;margin-right:4px">
+            Close
+          </button>` : ''}
+          <button onclick="deleteTrade(${t.id})"
+            style="background:#450a0a;color:#f87171;border:none;
+            border-radius:4px;padding:3px 8px;font-size:10px;cursor:pointer">
+            Del
+          </button>
+        </td>
+      </tr>`;
+    }).join('');
+  });
+}
+
+// ── Scorecard initializer ──────────────────────────────────
+loadScorecard();
 
 // ── Initialise ────────────────────────────────────────────
 loadPrefs();
