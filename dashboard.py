@@ -1865,6 +1865,7 @@ tbody tr:hover td:first-child {
   <div class="sub-filters" id="camarillaSubFilters" style="display:none">
     <button class="sub-btn active" id="sub-all" onclick="setSubTab('all')">All Signals</button>
     <button class="sub-btn" id="sub-entry" onclick="setSubTab('entry')">Entry Ready <span class="text-[10px] opacity-75 font-mono ml-0.5" id="sub-cnt-entry">0</span></button>
+    <button class="sub-btn" id="sub-fresh" onclick="setSubTab('fresh')">Show Fresh Only <span class="text-[10px] opacity-75 font-mono ml-0.5" id="sub-cnt-fresh">0</span></button>
     <button class="sub-btn" id="sub-bullish" onclick="setSubTab('bullish')">Bullish Strong <span class="text-[10px] opacity-75 font-mono ml-0.5" id="sub-cnt-bullish">0</span></button>
     <button class="sub-btn" id="sub-bearish" onclick="setSubTab('bearish')">Bearish Weak <span class="text-[10px] opacity-75 font-mono ml-0.5" id="sub-cnt-bearish">0</span></button>
     <button class="sub-btn" id="sub-mixed" onclick="setSubTab('mixed')">Mixed Caution <span class="text-[10px] opacity-75 font-mono ml-0.5" id="sub-cnt-mixed">0</span></button>
@@ -2881,7 +2882,28 @@ function preprocess(sigs){
   });
 
   // 4. Combine them so both real scanned signals and beautiful mock assets are available
-  return [...scanned, ...inactiveMock];
+  const combined = [...scanned, ...inactiveMock].map(s => {
+    const dist = Math.abs(s.dist_from_entry !== undefined ? s.dist_from_entry : (s.entry ? ((s.price - s.entry) / s.entry) * 100 : 0));
+    let penalty = 0;
+    if (dist > 10.0) penalty = 25;
+    else if (dist > 5.0) penalty = 15;
+    else if (dist > 2.0) penalty = 5;
+
+    // Apply penalty to score
+    if (s.score !== undefined) {
+      s.score = Math.max(0, s.score - penalty);
+    }
+    
+    // Recalibrate confidence based on penalized score
+    if (s.score !== undefined) {
+      if (s.score >= 90) s.confidence = 'A+';
+      else if (s.score >= 80) s.confidence = 'A';
+      else if (s.score >= 65) s.confidence = 'B';
+      else s.confidence = 'C';
+    }
+    return s;
+  });
+  return combined;
 }
 
 // Update counts on tabs
@@ -2899,6 +2921,7 @@ function updateCounts(){
     bearish:   base.filter(s=>s.signal_type==='Bear' && s.candle==='Bear').length,
     mixed:     base.filter(s=>(s.signal_type==='Bull'&&s.candle==='Bear')||(s.signal_type==='Bear'&&s.candle==='Bull')).length,
     entry:     base.filter(s=>Math.abs(s.price-s.entry)/s.entry<=0.02).length,
+    fresh:     base.filter(s=>Math.abs(s.dist_from_entry !== undefined ? s.dist_from_entry : (s.entry ? ((s.price - s.entry) / s.entry) * 100 : 0)) <= 5.0).length,
     hv:        base.filter(s=>s.days<=10).length,
     camarilla: base.length,
     watchlist: base.filter(s=>watchlist.includes(s.symbol)).length,
@@ -2907,6 +2930,8 @@ function updateCounts(){
   // Update sub-tabs counts
   document.getElementById('cnt-camarilla').textContent = counts.camarilla;
   document.getElementById('sub-cnt-entry').textContent = counts.entry;
+  const freshEl = document.getElementById('sub-cnt-fresh');
+  if (freshEl) freshEl.textContent = counts.fresh;
   document.getElementById('sub-cnt-bullish').textContent = counts.bullish;
   document.getElementById('sub-cnt-bearish').textContent = counts.bearish;
   document.getElementById('sub-cnt-mixed').textContent = counts.mixed;
@@ -3030,6 +3055,7 @@ function render(isTick = false){
     else if(activeSubTab === 'bearish')   f = f.filter(s => s.signal_type === 'Bear' && s.candle === 'Bear');
     else if(activeSubTab === 'mixed')     f = f.filter(s => (s.signal_type === 'Bull' && s.candle === 'Bear') || (s.signal_type === 'Bear' && s.candle === 'Bull'));
     else if(activeSubTab === 'entry')     f = f.filter(s => Math.abs(s.price - s.entry) / s.entry <= 0.02);
+    else if(activeSubTab === 'fresh')     f = f.filter(s => Math.abs(s.dist_from_entry !== undefined ? s.dist_from_entry : (s.entry ? ((s.price - s.entry) / s.entry) * 100 : 0)) <= 5.0);
     else if(activeSubTab === 'hv')        f = f.filter(s => s.days <= 10);
   } else if (activeTab === 'watchlist') {
     f = f.filter(s => watchlist.includes(s.symbol));
@@ -3117,6 +3143,7 @@ function render(isTick = false){
       <th onclick="sortBy('price')">LTP & Scanned <span class="sort-icon" id="si-price"><i class="ti ti-selector"></i></span></th>
       <th onclick="sortBy('entry')">Entry (Pivot) <span class="sort-icon" id="si-entry"><i class="ti ti-selector"></i></span></th>
       <th onclick="sortBy('dist_from_entry')">Dist% <span class="sort-icon" id="si-dist_from_entry"><i class="ti ti-selector"></i></span></th>
+      <th>Entry Status</th>
       <th onclick="sortBy('stop_loss')">Stop Loss <span class="sort-icon" id="si-stop_loss"><i class="ti ti-selector"></i></span></th>
       <th>Breakout Targets (T1/T2)</th>
       <th onclick="sortBy('risk_percentage')">Risk% <span class="sort-icon" id="si-risk_percentage"><i class="ti ti-selector"></i></span></th>
@@ -3133,7 +3160,7 @@ function render(isTick = false){
   }
 
   if(!f.length){
-    tbody.innerHTML=`<tr><td colspan="18" class="empty-state">
+    tbody.innerHTML=`<tr><td colspan="20" class="empty-state">
       <i class="ti ti-chart-candlestick" style="font-size:32px;color:var(--text-muted);display:block;margin-bottom:8px"></i>
       No signals matching current filters. Click <b>Run Live Scan</b> or search tickers.</td></tr>`;
     return;
@@ -3249,6 +3276,22 @@ function render(isTick = false){
       const rrColor = rrVal >= 3.0 ? 'up' : rrVal >= 1.5 ? 'd-warn' : 'dn';
       const ageLabel = (s.days === undefined || s.days === null) ? '—' : (s.days === 0 ? 'Today' : s.days === 1 ? '1d' : s.days + 'd');
 
+      const isStale = Math.abs(distVal) > 5.0;
+      const pullbackEntry = isBull ? pivots * 1.025 : pivots * 0.975;
+      const entryLabel = isStale 
+        ? `<span style="color:#fbbf24; font-weight:700">₹${pullbackEntry.toFixed(1)}</span><br><span style="font-size:8.5px;color:#f87171;font-weight:800">(Pullback)</span>` 
+        : `<span style="color:var(--text-primary)">₹${pivots.toFixed(1)}</span><br><span style="font-size:8.5px;color:var(--text-muted)">(Pivot)</span>`;
+
+      const statusBadge = (() => {
+        if (Math.abs(distVal) <= 2.0) {
+          return `<span style="background:rgba(16,185,129,0.15); color:#34d399; font-weight:800; padding:3px 8px; border-radius:4px; border:1px solid rgba(16,185,129,0.3); font-size:9.5px">FRESH ✅</span>`;
+        } else if (Math.abs(distVal) <= 5.0) {
+          return `<span style="background:rgba(245,158,11,0.15); color:#fbbf24; font-weight:800; padding:3px 8px; border-radius:4px; border:1px solid rgba(245,158,11,0.3); font-size:9.5px">EXTENDED ⚠️</span>`;
+        } else {
+          return `<span style="background:rgba(244,63,94,0.15); color:#f87171; font-weight:800; padding:3px 8px; border-radius:4px; border:1px solid rgba(244,63,94,0.3); font-size:9.5px">STALE ❌</span>`;
+        }
+      })();
+
       rowHtml = `<tr onclick="toggleRowExpand('${s.symbol}', event)" class="${isExpanded ? 'bg-blue-950/20 font-medium' : ''} ${flashClass}">
         <td>
           <div style="display:flex;justify-content:space-between;align-items:center;gap:12px">
@@ -3280,8 +3323,9 @@ function render(isTick = false){
           </span>
         </span></td>
         <td><div class="price-main">₹${s.price.toLocaleString("en-IN", {minimumFractionDigits: 2})}</div><div class="price-date">● ${s.scanned_date || 'Today'}</div></td>
-        <td style="font-family:var(--font-mono)">₹${pivots.toFixed(1)}</td>
+        <td style="font-family:var(--font-mono); text-align:center">${entryLabel}</td>
         <td><span class="${distVal > 2.0 ? 'dn' : distVal < -2.0 ? 'dn' : 'up'}" style="font-weight:700">${distVal > 0 ? '+' : ''}${distVal.toFixed(1)}%</span></td>
+        <td style="text-align:center">${statusBadge}</td>
         <td class="sl">₹${stopLosses.toFixed(1)}</td>
         <td class="cam-levels">
           <div class="cam-h3" style="color:var(--pro-buy)">T1 ₹${targets1.toFixed(1)}</div>
@@ -3339,7 +3383,7 @@ function render(isTick = false){
 
     if (isExpanded) {
       const detailHtml = `<tr class="bg-blue-950/5 border-b border-slate-800">
-        <td colspan="18" style="padding:16px">
+        <td colspan="20" style="padding:16px">
           <div class="expanded-panel">
             <div style="display:flex; flex-direction:column; gap:12px">
               <div style="display:flex; justify-content:space-between; align-items:center">
@@ -3764,37 +3808,53 @@ let _jmData = {};
 function logTradeFromRow(event, data) {
   event.stopPropagation();
   _jmData = data;
+  
+  const entryP = data.entry_price || data.entry || 0;
+  const currentLTP = data.price || 0;
+  const distVal = data.dist_from_entry !== undefined ? data.dist_from_entry : (entryP ? ((currentLTP - entryP) / entryP) * 100 : 0);
+  const isStale = Math.abs(distVal) > 5.0;
+  const isBullSignal = (data.signal_type || '').toLowerCase().includes('bull');
+  const pullbackEntry = isStale ? (isBullSignal ? entryP * 1.025 : entryP * 0.975) : entryP;
+
   document.getElementById('jm-symbol').textContent = data.symbol;
-  document.getElementById('jm-entry').value = data.entry_price;
-  document.getElementById('jm-sl').value = data.stop_loss;
+  document.getElementById('jm-entry').value = pullbackEntry.toFixed(2);
+  document.getElementById('jm-sl').value = data.stop_loss.toFixed(2);
   calcJournalSizer();
 
   // ── Signal badge ──
   const badge = document.getElementById('jm-signal-badge');
   if (badge) {
-    const isBull = (data.signal_type || '').toLowerCase().includes('bull');
-    badge.textContent = isBull ? '🟢 BUY' : '🔴 SHORT';
-    badge.style.background = isBull ? 'rgba(16,185,129,0.15)' : 'rgba(244,63,94,0.15)';
-    badge.style.color = isBull ? 'var(--pro-buy)' : 'var(--pro-sell)';
-    badge.style.border = isBull ? '1px solid rgba(16,185,129,0.3)' : '1px solid rgba(244,63,94,0.3)';
+    badge.textContent = isBullSignal ? '🟢 BUY' : '🔴 SHORT';
+    badge.style.background = isBullSignal ? 'rgba(16,185,129,0.15)' : 'rgba(244,63,94,0.15)';
+    badge.style.color = isBullSignal ? 'var(--pro-buy)' : 'var(--pro-sell)';
+    badge.style.border = isBullSignal ? '1px solid rgba(16,185,129,0.3)' : '1px solid rgba(244,63,94,0.3)';
   }
 
-  // ── Feature 4: Regime-Conflict Warning ──
+  // ── Feature 4: Regime-Conflict & Stale Entry Warnings ──
   const regime = window.niftyRegime || 'NEUTRAL';
-  const isBullSignal = (data.signal_type || '').toLowerCase().includes('bull');
   const isBearRegime = regime === 'STRONG_BEAR' || regime === 'BEAR';
   const isBullRegime = regime === 'STRONG_BULL' || regime === 'BULL';
   const warnEl = document.getElementById('jm-regime-warning');
   const warnTxt = document.getElementById('jm-regime-warning-text');
+  
   if (warnEl && warnTxt) {
+    let warnMsg = '';
     if (isBullSignal && isBearRegime) {
-      warnTxt.textContent = `Regime conflict — BUY signal in ${regime.replace('_',' ')} market. Consider reducing position to 50% or wait for regime shift to NEUTRAL.`;
-      warnEl.style.display = 'flex';
+      warnMsg = `Regime conflict — BUY signal in ${regime.replace('_',' ')} market. Consider reducing position to 50% or wait for regime shift to NEUTRAL.`;
       document.getElementById('jm-risk-pct').value = 0.5; // auto halve risk
       calcJournalSizer();
       showToast('⚠️ Risk auto-halved due to regime conflict');
     } else if (!isBullSignal && isBullRegime) {
-      warnTxt.textContent = `Regime conflict — SHORT signal in ${regime.replace('_',' ')} market. High squeeze risk. Use tight SL and reduce size.`;
+      warnMsg = `Regime conflict — SHORT signal in ${regime.replace('_',' ')} market. High squeeze risk. Use tight SL and reduce size.`;
+    }
+
+    if (isStale) {
+      if (warnMsg) warnMsg += '<br><br>';
+      warnMsg += `⚠️ Price has moved ${Math.abs(distVal).toFixed(1)}% from pivot. This entry is STALE. Prefilled with dynamic pullback support of ₹${pullbackEntry.toFixed(1)}. Consider reducing position size.`;
+    }
+
+    if (warnMsg) {
+      warnTxt.innerHTML = warnMsg;
       warnEl.style.display = 'flex';
     } else {
       warnEl.style.display = 'none';
