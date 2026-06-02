@@ -189,7 +189,7 @@ NIFTY500_SAMPLE: List[str] = [
     "LT.NS", "AXISBANK.NS", "ASIANPAINT.NS", "MARUTI.NS", "SUNPHARMA.NS",
     "TITAN.NS", "BAJFINANCE.NS", "WIPRO.NS", "NESTLEIND.NS", "ULTRACEMCO.NS",
     "APOLLOHOSP.NS", "TECHM.NS", "HCLTECH.NS", "POWERGRID.NS", "NTPC.NS",
-    "TATAMOTORS.NS", "ONGC.NS", "JSWSTEEL.NS", "TATASTEEL.NS", "BAJAJFINSV.NS",
+    "TMCV.NS", "ONGC.NS", "JSWSTEEL.NS", "TATASTEEL.NS", "BAJAJFINSV.NS",
     "DIVISLAB.NS", "DRREDDY.NS", "CIPLA.NS", "EICHERMOT.NS", "HEROMOTOCO.NS",
     "GRASIM.NS", "BPCL.NS", "COALINDIA.NS", "INDUSINDBK.NS", "ADANIPORTS.NS",
     "DABUR.NS", "MARICO.NS", "PIDILITIND.NS", "BERGEPAINT.NS", "HAVELLS.NS",
@@ -546,17 +546,24 @@ def _download(ticker: str, retries: int = 3, use_cache_only: bool = False) -> Op
                 pass
         return None
 
-    # Check cache validity (reuse if modified within last 1 hour)
+    # Check cache validity — 15 min TTL during NSE market hours, 1 hour otherwise
     if os.path.exists(cache_path):
         try:
             mtime = os.path.getmtime(cache_path)
-            # 3600 seconds = 1 hour
-            if time.time() - mtime < 3600:
+            # Determine TTL: 15 min during NSE market hours (09:15–15:30 IST)
+            from datetime import datetime, timezone, timedelta
+            _ist = timezone(timedelta(hours=5, minutes=30))
+            _now_ist = datetime.now(_ist)
+            _market_open  = _now_ist.replace(hour=9,  minute=15, second=0, microsecond=0)
+            _market_close = _now_ist.replace(hour=15, minute=30, second=0, microsecond=0)
+            _in_market = _market_open <= _now_ist <= _market_close
+            _ttl = 900 if _in_market else 3600   # 15 min in market, 1 hr otherwise
+            if time.time() - mtime < _ttl:
                 df = pd.read_csv(cache_path, index_col=0, parse_dates=True)
                 if df is not None and not df.empty:
                     df = normalize_dataframe(df)
                     if df is not None and not df.empty:
-                        log.debug(f"{ticker}: Loaded from local cache")
+                        log.debug(f"{ticker}: Loaded from local cache (TTL={'15min' if _in_market else '1hr'})")
                         return df
         except Exception:
             pass
@@ -653,7 +660,64 @@ def analyse(
 
         df.dropna(inplace=True)
         
-        # 1. Critical Fix #2: OHLC Data Integrity Validation
+        # ── Live price + previous close via fast_info (cache-busted) ──
+        ticker_obj = yf.Ticker(ticker)
+        year_high    = None
+        year_low     = None
+        live_price   = None
+        prev_close_fi = None   # fast_info previous_close — always accurate
+
+        try:
+            # Warm up ticker cache with fresh 1-min bar first
+            ticker_obj.history(
+                period="1d",
+                interval="1m",
+                auto_adjust=True,
+                prepost=False,
+                repair=True,
+            )
+        except Exception as e:
+            log.warning(f"Error forcing 1m history for {ticker}: {e}")
+
+        try:
+            fast = ticker_obj.fast_info
+            live_price    = fast.get('last_price')
+            prev_close_fi = fast.get('previous_close')   # ← KEY FIX
+            year_high     = fast.get('year_high')
+            year_low      = fast.get('year_low')
+            if live_price is not None:
+                df.at[df.index[-1], "close"] = float(live_price)
+        except Exception as e:
+            log.warning(f"Error fetching fast_info for {ticker}: {e}")
+
+        # ── Fallback: if fast_info gave no live price, do a quick 5d download ──
+        # This handles Yahoo Finance rate-limiting of fast_info during market hours.
+        if live_price is None:
+            try:
+                with _YF_LOCK:
+                    _df5 = yf.download(
+                        ticker, period="5d", interval="1d",
+                        progress=False, auto_adjust=True, timeout=15
+                    )
+                if _df5 is not None and not _df5.empty:
+                    if isinstance(_df5.columns[0], tuple):
+                        _df5.columns = [c[0].lower() for c in _df5.columns]
+                    else:
+                        _df5.columns = [str(c).lower() for c in _df5.columns]
+                    _today_close = float(_df5["close"].iloc[-1])
+                    _today_prev  = float(_df5["close"].iloc[-2]) if len(_df5) >= 2 else None
+                    # Only use if it looks like today's data
+                    from datetime import date
+                    if _df5.index[-1].date() >= date.today():
+                        live_price = _today_close
+                        df.at[df.index[-1], "close"] = _today_close
+                        log.info(f"{ticker}: fast_info unavailable; used 5d download close={_today_close:.2f}")
+                        if prev_close_fi is None and _today_prev is not None:
+                            prev_close_fi = _today_prev
+            except Exception as e2:
+                log.warning(f"{ticker}: 5d fallback also failed: {e2}")
+
+        # OHLC Data Integrity Validation
         if not validate_dataframe(df, ticker):
             if explain_skip:
                 return {
@@ -669,11 +733,33 @@ def analyse(
         df["ema50"]  = df["close"].ewm(span=50,  adjust=False).mean()
         df["ema200"] = df["close"].ewm(span=200, adjust=False).mean()
 
+        # ── Wilder's RSI 14 ──────────────────────────────────
+        delta = df["close"].diff()
+        gain = (delta.where(delta > 0, 0)).ewm(alpha=1/14, adjust=False).mean()
+        loss = (-delta.where(delta < 0, 0)).ewm(alpha=1/14, adjust=False).mean()
+        rs = gain / loss.replace(0, 1e-9)
+        df["rsi14"] = 100 - (100 / (1 + rs))
+
         # ── Volume N-day average (shift(1) excludes today) ────
         df["vol_avg"] = df["volume"].rolling(vol_days).mean().shift(1)
 
-        last    = df.iloc[-1]
-        close   = float(last["close"])
+        last  = df.iloc[-1]
+        close = float(last["close"])
+        rsi   = float(df["rsi14"].iloc[-1]) if not pd.isna(df["rsi14"].iloc[-1]) else 50.0
+
+        # ── Day change % — CRITICAL: use fast_info.previous_close ────────
+        # fast_info['previous_close'] is always yesterday's official close
+        # regardless of whether the CSV cache is stale or today's bar is incomplete.
+        # Fallback chain: fast_info → df.iloc[-2] → 0%
+        if prev_close_fi is not None and float(prev_close_fi) > 0:
+            prev_close = float(prev_close_fi)
+            log.debug(f"{ticker}: prev_close from fast_info = {prev_close:.2f}")
+        elif len(df) >= 2:
+            prev_close = float(df["close"].iloc[-2])
+            log.debug(f"{ticker}: prev_close fallback from df.iloc[-2] = {prev_close:.2f}")
+        else:
+            prev_close = close
+        day_change = (close - prev_close) / prev_close * 100 if prev_close > 0 else 0.0
 
         # Minimum Price Filter
         min_price = float(cfg.get("MIN_PRICE", 50.0))
@@ -760,6 +846,23 @@ def analyse(
         lookback        = df.iloc[-252:]  # Enforce strictly 252-day lookback for correct 52-week range
         hv_high         = float(lookback["high"].max())
         hv_low          = float(lookback["low"].min())
+
+        if year_high is not None:
+            hv_high = float(year_high)
+        if year_low is not None:
+            hv_low = float(year_low)
+
+        # Sanity Check for stock splits / demergers data errors
+        if close > hv_high * 1.05:
+            log.warning(f"🚩 {ticker}: Sanity check failed (LTP ₹{close:.2f} > 52W High ₹{hv_high:.2f} * 1.05)")
+            if explain_skip:
+                return {
+                    "symbol": ticker.replace(".NS", ""),
+                    "skipped": True,
+                    "reason": f"DATA ERROR ⚠️ (LTP ₹{close:.2f} > 52W High ₹{hv_high:.2f} * 1.05)"
+                }
+            return None
+
         hv_high_idx     = lookback["high"].idxmax()
         hv_date         = hv_high_idx.strftime("%d-%b-%Y")
         days_since_high = int((datetime.now().date() - hv_high_idx.date()).days)
@@ -847,6 +950,43 @@ def analyse(
                     "reason": f"Positive 50-day relative strength ({rs_50d:.2f}% >= 0)"
                 }
             return None
+
+        # ── BUY Scan Strict Trend/Momentum Filters ─────────────
+        if not bearish:
+            # 1. Day change filter: exclude if day change is less than -1.0%
+            if day_change < -1.0:
+                log.info(f"🚩 {ticker}: Excluded from BUY scan due to negative day change ({day_change:.2f}% < -1.0%)")
+                if explain_skip:
+                    return {
+                        "symbol": ticker.replace(".NS", ""),
+                        "skipped": True,
+                        "reason": f"Negative day change ({day_change:.2f}% < -1.0%)"
+                    }
+                return None
+
+            # 2. RSI filter: exclude if RSI < 45
+            if rsi < 45:
+                log.info(f"🚩 {ticker}: Excluded from BUY scan due to low RSI ({rsi:.2f} < 45)")
+                if explain_skip:
+                    return {
+                        "symbol": ticker.replace(".NS", ""),
+                        "skipped": True,
+                        "reason": f"Low RSI ({rsi:.2f} < 45)"
+                    }
+                return None
+
+            # 3. Stricter bear market filter: if Nifty regime is BEAR/STRONG_BEAR, require RSI > 55 and Vol Spike > 2.0x
+            nifty_regime = get_regime().get("regime", "NEUTRAL").upper()
+            if "BEAR" in nifty_regime:
+                if rsi <= 55 or vol_ratio <= 2.0:
+                    log.info(f"🚩 {ticker}: Excluded from BUY scan in bear market (requires RSI > 55 and Vol > 2.0x; found RSI {rsi:.2f}, Vol {vol_ratio:.2f}x)")
+                    if explain_skip:
+                        return {
+                            "symbol": ticker.replace(".NS", ""),
+                            "skipped": True,
+                            "reason": f"Bear market regime filter failed (RSI {rsi:.2f} <= 55 or Vol {vol_ratio:.2f}x <= 2.0x)"
+                        }
+                    return None
 
         if not bearish:
             target1 = cam["H3"]
@@ -948,6 +1088,8 @@ def analyse(
             "symbol":            ticker.replace(".NS", ""),
             "signal_type":       "Bear" if bearish else "Bull",
             "price":             round(close, 2),
+            "rsi":               round(rsi, 2),
+            "change":            round(day_change, 2),
             "hv_high":           round(hv_high, 2),
             "hv_low":            round(hv_low,  2),
             "hv_date":           hv_date,
@@ -971,6 +1113,7 @@ def analyse(
             "ema200":            round(float(last["ema200"]), 2),
             "scanned_date":      df.index[-1].strftime("%d-%b-%Y"),
             "scanned_time":      datetime.now().strftime("%H:%M"),
+            "scanned_timestamp": time.time(),
             "dist_from_entry":   round(((close - entry) / entry) * 100, 2) if entry else 0.0,
             "atr":               round(last_atr, 2),
             "range_expansion":   range_expansion,
@@ -1052,6 +1195,28 @@ def run_scan(
     counter  = {"n": 0, "start": time.time(), "cache_hits": 0}
     lock     = threading.Lock()
     workers  = (cfg_override or {}).get("MAX_WORKERS", CFG["MAX_WORKERS"])
+
+    # Clear requests_cache before every scan to prevent stale data
+    try:
+        import requests_cache
+        requests_cache.clear()
+        log.info("🧹 requests_cache cleared successfully before starting scan.")
+    except Exception as e:
+        log.warning(f"Could not clear requests_cache: {e}")
+
+    # Delete yfinance timezone cache directory to bust cache
+    yf_cache_temp = os.path.join("data_cache", "yf_cache_temp")
+    if os.path.exists(yf_cache_temp):
+        try:
+            import shutil
+            shutil.rmtree(yf_cache_temp)
+            log.info("🧹 Temporary timezone cache folder deleted.")
+        except Exception as e:
+            log.warning(f"Could not delete temporary timezone cache: {e}")
+    try:
+        yf.set_tz_cache_location(yf_cache_temp)
+    except Exception as e:
+        log.warning(f"Could not set timezone cache location: {e}")
 
     # Download Nifty index first for RS ranking
     get_nifty_returns()

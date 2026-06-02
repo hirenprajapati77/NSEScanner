@@ -14,6 +14,7 @@ numpy>=1.24.0,<2.0.0          # Required by pandas/yfinance
 # ── HTTP & networking ─────────────────────────────────────
 requests>=2.31.0,<3.0.0
 urllib3>=1.26.0,<3.0.0        # HTTPAdapter + Retry — must be compatible with requests
+requests-cache>=1.1.0         # yfinance cache-busting
 
 # ── Environment & config ──────────────────────────────────
 python-dotenv>=1.0.0
