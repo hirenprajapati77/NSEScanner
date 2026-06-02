@@ -521,6 +521,70 @@ def fii_dii_route():
         return jsonify(cache["data"])
 
 
+# ── Real NSE Sector Index data via Yahoo Finance fast_info ─────
+_sector_cache = {"data": None, "fetched_at": None, "fetched_time": None}
+_sector_lock = threading.Lock()
+
+NSE_SECTOR_TICKERS = {
+    "Banking":  "^NSEBANK",
+    "IT":       "^CNXIT",
+    "Pharma":   "^CNXPHARMA",
+    "Auto":     "^CNXAUTO",
+    "FMCG":     "^CNXFMCG",
+    "Metals":   "^CNXMETAL",
+    "Energy":   "^CNXENERGY",
+    "Realty":   "^CNXREALTY",
+    "Infra":    "^CNXINFRA",
+    "Media":    "^CNXMEDIA",
+}
+
+def _fetch_sector_rotation():
+    """Fetch today's % change for each NSE sector index.
+    Uses yf.download (5d EOD) — works both intraday and after-hours."""
+    import yfinance as yf
+    import pandas as pd
+    from datetime import timezone, timedelta
+    result = []
+    for name, ticker in NSE_SECTOR_TICKERS.items():
+        change = 0.0
+        try:
+            data = yf.download(ticker, period="5d", interval="1d",
+                               progress=False, auto_adjust=True)
+            if not data.empty:
+                # yfinance may return multi-level columns: ("Close", ticker)
+                close_col = data["Close"]
+                if isinstance(close_col, pd.DataFrame):
+                    close_col = close_col.squeeze()  # flatten to Series
+                closes = close_col.dropna()
+                if len(closes) >= 2:
+                    p = float(closes.iloc[-2])
+                    l = float(closes.iloc[-1])
+                    if p > 0:
+                        change = round((l - p) / p * 100, 2)
+        except Exception:
+            change = 0.0
+        trend    = "up" if change > 0.4 else "down" if change < -0.4 else "neutral"
+        strength = min(100, max(0, int(50 + change * 10)))
+        result.append({"name": name, "change": change,
+                        "trend": trend, "strength": strength})
+    ist_tz = timezone(timedelta(hours=5, minutes=30))
+    time_label = datetime.now(ist_tz).strftime("%H:%M IST")
+    return {"sectors": result, "fetched_time": time_label}
+
+
+@app.route("/sector_rotation")
+def sector_rotation_route():
+    """Return real NSE sector index daily % change, cached for 5 min."""
+    with _sector_lock:
+        now = datetime.now()
+        cache = _sector_cache
+        if cache["data"] is None or cache["fetched_at"] is None or \
+           (now - cache["fetched_at"]).total_seconds() > 300:   # 5-min cache
+            cache["data"] = _fetch_sector_rotation()
+            cache["fetched_at"] = now
+        return jsonify(cache["data"])
+
+
 @app.route("/results")
 def results():
     s = _read_state()
@@ -710,27 +774,30 @@ def regime_route():
 def journal_get():
     outcome = request.args.get("outcome")   # OPEN/WIN/LOSS/all
     trades  = get_trades(outcome=outcome if outcome != "all" else None)
-    
-    # Enrich open trades with the latest scanned prices
+
+    # Enrich open trades with live LTP via yfinance fast_info
+    import yfinance as yf
     state = _read_state()
     signals_list = state.get("signals", [])
-    price_map = {str(s.get("symbol", "")).upper(): s.get("price") for s in signals_list if s.get("symbol")}
-    
+    price_map = {str(s.get("symbol", "")).upper(): s.get("price")
+                 for s in signals_list if s.get("symbol")}
+
     for t in trades:
-        # If open, look up latest price from memory cache
+        if t.get("outcome") and t["outcome"] not in (None, "", "OPEN"):
+            continue  # closed trades don't need live LTP
         sym = str(t.get("symbol", "")).upper()
+        # 1. Try scan cache first (fastest)
         if sym in price_map:
             t["current_ltp"] = price_map[sym]
-        else:
-            # Fallback to mock prices if not found in active scanned signals (for mock assets)
-            mock_prices = {
-                "HDFCBANK": 744.0, "RELIANCE": 2981.0, "TMCV": 374.0, 
-                "INFY": 1823.7, "SBIN": 812.9, "DRREDDY": 5412.0, 
-                "COALINDIA": 472.6, "DLF": 892.1, "MARUTI": 12450.0, 
-                "WIPRO": 548.3, "ADANIENT": 2634.0, "ITC": 448.7
-            }
-            if sym in mock_prices:
-                t["current_ltp"] = mock_prices[sym]
+            continue
+        # 2. Fetch live from yfinance fast_info
+        try:
+            ticker_obj = yf.Ticker(sym + ".NS")
+            live_ltp = ticker_obj.fast_info.get("last_price") or None
+            if live_ltp and live_ltp > 0:
+                t["current_ltp"] = round(float(live_ltp), 2)
+        except Exception:
+            pass  # leave current_ltp unset — UI shows —
 
     return jsonify({"trades": trades, "count": len(trades)})
 
@@ -2107,10 +2174,12 @@ tbody tr:hover td:first-child {
         <div class="widget-header">
           <div class="w-2.5 h-2.5 rounded-full bg-orange-500 animate-pulse"></div>
           <span>Sector Rotation Momentum</span>
+          <span id="sectorDataSource" style="display:none;margin-left:auto;font-size:9px;font-weight:600;letter-spacing:.5px;color:var(--pro-buy);background:rgba(16,185,129,.12);padding:2px 7px;border-radius:20px;border:1px solid rgba(16,185,129,.25)">⚡ LIVE · Yahoo Finance</span>
         </div>
         <div class="heatmap-grid" id="heatmapGrid">
           <!-- Populated dynamically -->
         </div>
+        <div id="sectorFetchTime" style="font-size:9px;color:var(--text-muted);text-align:right;margin-top:4px;padding:0 2px;display:none"></div>
       </div>
 
       <!-- Option Chain PCR widget -->
@@ -2405,20 +2474,59 @@ let fiiNetVal = -1240;
 let diiNetVal = 2180;
 let niftyClosePrice = 23450;
 
-// Sector Data structures (10 core NSE F&O sectors)
-const initialSectors = [
-  { name: "Banking", change: 1.8, trend: "up", strength: 92 },
-  { name: "IT", change: 0.4, trend: "up", strength: 61 },
-  { name: "Pharma", change: -0.6, trend: "down", strength: 38 },
-  { name: "Auto", change: 2.1, trend: "up", strength: 95 },
-  { name: "FMCG", change: 0.1, trend: "neutral", strength: 52 },
-  { name: "Metals", change: -1.4, trend: "down", strength: 22 },
-  { name: "Energy", change: 0.9, trend: "up", strength: 70 },
-  { name: "Realty", change: 3.2, trend: "up", strength: 98 },
-  { name: "Infra", change: 1.1, trend: "up", strength: 74 },
-  { name: "Media", change: -0.3, trend: "down", strength: 44 }
-];
-let activeSectors = [...initialSectors];
+// Sector Data — loaded from real NSE sector indices via backend
+const SECTOR_NAMES = ["Banking","IT","Pharma","Auto","FMCG","Metals","Energy","Realty","Infra","Media"];
+let activeSectors = SECTOR_NAMES.map(n => ({ name: n, change: 0.0, trend: "neutral", strength: 50 }));
+
+function fetchSectorRotation() {
+  fetch('/sector_rotation')
+    .then(r => r.json())
+    .then(resp => {
+      // New API format: {sectors: [...], fetched_time: "HH:MM IST"}
+      const sectors = Array.isArray(resp) ? resp : (resp.sectors || []);
+      const fetchedTime = resp.fetched_time || null;
+      if (sectors.length > 0) {
+        activeSectors = sectors;
+        // Re-render heatmap with real data
+        const hGrid = document.getElementById('heatmapGrid');
+        if (hGrid) {
+          hGrid.innerHTML = activeSectors.map(s => {
+            let colors = "";
+            if (s.trend === "up") {
+              colors = "background: rgba(16, 185, 129, 0.08); border-color: rgba(16, 185, 129, 0.15); color: var(--pro-buy)";
+            } else if (s.trend === "down") {
+              colors = "background: rgba(244, 63, 94, 0.08); border-color: rgba(244, 63, 94, 0.15); color: var(--pro-sell)";
+            } else {
+              colors = "background: var(--bg-inner); border-color: var(--border-slate); color: var(--text-muted)";
+            }
+            const isActive = activeSector === s.name;
+            return `<button
+              onclick="toggleSectorFilter('${s.name}')"
+              style="${colors}"
+              class="heatmap-btn ${isActive ? 'active' : ''}"
+            >
+              <span style="font-weight:700">${s.name}</span>
+              <div style="font-size:9.5px;font-family:var(--font-mono);display:flex;justify-content:space-between;width:100%">
+                <span>${s.change > 0 ? '+' : ''}${Number(s.change).toFixed(2)}%</span>
+                <span>${s.trend === 'up' ? '↑' : s.trend === 'down' ? '↓' : '→'}</span>
+              </div>
+            </button>`;
+          }).join('');
+        }
+        // Show LIVE badge
+        const sectorLabel = document.getElementById('sectorDataSource');
+        if (sectorLabel) sectorLabel.style.display = 'inline';
+        // Show freshness timestamp
+        const timeEl = document.getElementById('sectorFetchTime');
+        if (timeEl && fetchedTime) {
+          timeEl.textContent = 'Sector data as of: ' + fetchedTime;
+          timeEl.style.display = 'block';
+        }
+      }
+    })
+    .catch(() => { /* keep neutral placeholders on error */ });
+}
+let activeSectors_fetchTimer = null;
 
 const sectorMapping = {
   // Original mock stocks
@@ -2825,51 +2933,90 @@ function renderHome() {
   const homeDiv = document.getElementById('homeTabContent');
   if (!homeDiv) return;
 
-  // 1. Get Top Opportunity
-  const topOpt = [...stocks].sort((a,b) => (b.score||0) - (a.score||0))[0];
+  // 1. Get Top 3 Opportunities (non-mock, sorted by score)
+  const top3 = [...stocks].filter(s => !s.isMock).sort((a,b) => (b.score||0) - (a.score||0)).slice(0, 3);
   let topOptHTML = "";
-  if (topOpt) {
-    const isBull = topOpt.signal_type === 'Bull';
-    const entryVal = topOpt.entry ? topOpt.entry : topOpt.price;
-    const targets1 = topOpt.target ? topOpt.target : entryVal * 1.015;
-    const statusLabel = Math.abs(topOpt.dist_from_entry || 0) <= 2.0 ? 'FRESH ✅' : Math.abs(topOpt.dist_from_entry || 0) <= 5.0 ? 'EXTENDED ⚠️' : 'STALE ❌';
-    
-    // Create prefill data string safely for JSON
-    const prefillData = {
-      symbol: topOpt.symbol,
-      signal_type: topOpt.signal_type,
-      conf_grade: topOpt.confidence || 'A',
-      raw_score: topOpt.score,
-      regime_score: topOpt.score,
-      regime: window.niftyRegime || 'NEUTRAL',
-      entry_price: entryVal,
-      stop_loss: topOpt.stop_loss || entryVal * 0.985,
-      target_t1: targets1,
-      target_t2: topOpt.target2 || entryVal * 1.03,
-      risk_pct: topOpt.risk_percentage || 1.5,
-      rr_ratio: topOpt.rr || 2.0
-    };
-    
-    topOptHTML = `
-      <div class="widget-card" style="border: 1px solid var(--pro-electric); background: rgba(59, 130, 246, 0.04); display: flex; align-items: center; justify-content: space-between; padding: 14px 18px; border-radius: 12px; flex-wrap: wrap; gap: 10px;">
-        <div style="display: flex; align-items: center; gap: 10px;">
-          <span style="font-size: 18px;">🔥</span>
+
+  function getAIReason(s) {
+    const parts = [];
+    if (s.vol_ratio >= 3) parts.push(`${s.vol_ratio.toFixed(1)}x volume surge`);
+    else if (s.vol_ratio >= 1.5) parts.push(`${s.vol_ratio.toFixed(1)}x above-avg volume`);
+    if (s.rsi >= 65) parts.push(`RSI ${s.rsi} (momentum)`);
+    else if (s.rsi <= 35) parts.push(`RSI ${s.rsi} (oversold bounce)`);
+    if (s.tf) parts.push(`${s.tf} breakout`);
+    if (s.dist_from_entry !== undefined && Math.abs(s.dist_from_entry) <= 1.5) parts.push('price at pivot entry');
+    if (s.sector) parts.push(`${s.sector} sector`);
+    return parts.length ? parts.slice(0, 3).join(' · ') : 'High-score Camarilla setup';
+  }
+
+  function getStatusBadge3(s) {
+    const d = s.dist_from_entry !== undefined ? s.dist_from_entry : 0;
+    if (d < -2.0) return ['BELOW PIVOT 📉', '#818cf8', 'rgba(99,102,241,0.15)', 'rgba(99,102,241,0.3)'];
+    if (Math.abs(d) <= 2.0) return ['FRESH ✅', '#34d399', 'rgba(16,185,129,0.15)', 'rgba(16,185,129,0.3)'];
+    if (Math.abs(d) <= 5.0) return ['EXTENDED ⚠️', '#fbbf24', 'rgba(245,158,11,0.15)', 'rgba(245,158,11,0.3)'];
+    return ['STALE ❌', '#f87171', 'rgba(244,63,94,0.15)', 'rgba(244,63,94,0.3)'];
+  }
+
+  if (top3.length > 0) {
+    const cards = top3.map((s, rank) => {
+      const isBull = s.signal_type === 'Bull';
+      const signalColor = isBull ? 'var(--pro-buy)' : 'var(--pro-sell)';
+      const signalBg = isBull ? 'rgba(16,185,129,0.15)' : 'rgba(244,63,94,0.15)';
+      const signalBorder = isBull ? 'rgba(16,185,129,0.3)' : 'rgba(244,63,94,0.3)';
+      const scoreW = Math.min(100, s.score || 0);
+      const scoreColor = scoreW >= 80 ? '#10B981' : scoreW >= 60 ? '#fbbf24' : '#f87171';
+      const [stLabel, stColor, stBg, stBorder] = getStatusBadge3(s);
+      const reason = getAIReason(s);
+      const entryVal = s.entry || s.price;
+      const prefill = {
+        symbol: s.symbol, signal_type: s.signal_type,
+        conf_grade: s.confidence || 'B', raw_score: s.score,
+        regime_score: s.score, regime: window.niftyRegime || 'NEUTRAL',
+        entry_price: entryVal, stop_loss: s.stop_loss || entryVal * 0.985,
+        target_t1: s.target || entryVal * 1.015,
+        target_t2: s.target2 || entryVal * 1.03,
+        risk_pct: s.risk_percentage || 1.5, rr_ratio: s.rr || 2.0
+      };
+      const medal = rank === 0 ? '🥇' : rank === 1 ? '🥈' : '🥉';
+      return `
+        <div style="flex:1;min-width:180px;background:var(--bg-inner);border:1px solid ${isBull ? 'rgba(16,185,129,0.2)' : 'rgba(244,63,94,0.2)'};border-radius:12px;padding:14px;display:flex;flex-direction:column;gap:9px;position:relative;overflow:hidden;">
+          <div style="position:absolute;top:0;left:0;right:0;height:2px;background:${signalColor};opacity:0.5"></div>
+          <div style="display:flex;align-items:center;justify-content:space-between;">
+            <div>
+              <span style="font-size:9px;color:var(--text-muted);font-weight:700">${medal} RANK #${rank+1}</span>
+              <div style="font-size:16px;font-weight:900;font-family:var(--font-mono);color:var(--pro-electric);letter-spacing:-.02em">${s.symbol}</div>
+              <div style="font-size:9.5px;color:var(--text-muted)">${s.name || ''}</div>
+            </div>
+            <span style="font-size:10px;font-weight:800;padding:3px 8px;border-radius:5px;background:${signalBg};color:${signalColor};border:1px solid ${signalBorder}">${isBull ? 'BUY' : 'SHORT'}</span>
+          </div>
           <div>
-            <div style="font-size: 9px; color: var(--text-muted); font-weight: 700; text-transform: uppercase;">TODAY'S TOP OPPORTUNITY</div>
-            <div style="font-size: 13.5px; font-weight: 800; color: #fff;">
-              <span class="sym" style="color: var(--pro-electric); font-family: var(--font-mono);">${topOpt.symbol}</span> &nbsp;
-              <span style="font-size: 10px; font-weight: 800; padding: 2px 6px; border-radius: 4px; background: ${isBull?'rgba(16,185,129,0.15)':'rgba(244,63,94,0.15)'}; color: ${isBull?'var(--pro-buy)':'var(--pro-sell)'}; border: 1px solid ${isBull?'rgba(16,185,129,0.3)':'rgba(244,63,94,0.3)'};">${topOpt.signal_type === 'Bull' ? 'BUY' : 'SHORT'}</span> &nbsp;
-              Score <span style="color: var(--pro-buy); font-family: var(--font-mono); font-weight: 800;">${topOpt.score}/100</span> &nbsp;
-              LTP <span style="font-family: var(--font-mono); font-weight: 700;">${fmt(topOpt.price)}</span>
+            <div style="display:flex;justify-content:space-between;font-size:9px;color:var(--text-muted);margin-bottom:3px">
+              <span>Score</span><span style="color:${scoreColor};font-weight:800">${s.score}/100</span>
+            </div>
+            <div style="height:5px;background:var(--bg-card);border-radius:3px;overflow:hidden">
+              <div style="height:100%;width:${scoreW}%;background:${scoreColor};border-radius:3px;transition:width .6s ease"></div>
             </div>
           </div>
-        </div>
-        <div style="display: flex; align-items: center; gap: 8px;">
-          <span style="font-size: 11px; font-weight: 700; color: ${statusLabel.includes('FRESH')?'var(--pro-buy)':statusLabel.includes('EXTENDED')?'var(--pro-watch)':'var(--pro-sell)'}">${statusLabel}</span>
-          <button onclick="logTradeFromRow(event, ${JSON.stringify(prefillData).replace(/"/g,"'")})" style="background: var(--pro-electric); color: #fff; border: none; border-radius: 6px; padding: 6px 14px; font-size: 11px; cursor: pointer; font-weight: 700; display: inline-flex; align-items: center; gap: 4px;">
+          <div style="display:flex;justify-content:space-between;align-items:center;">
+            <div>
+              <div style="font-size:8.5px;color:var(--text-muted)">LTP</div>
+              <div style="font-size:14px;font-weight:800;font-family:var(--font-mono)">${fmt(s.price)}</div>
+            </div>
+            <span style="font-size:8.5px;font-weight:800;padding:2px 7px;border-radius:4px;background:${stBg};color:${stColor};border:1px solid ${stBorder}">${stLabel}</span>
+          </div>
+          <div style="font-size:9px;color:var(--text-muted);line-height:1.4;border-top:1px solid var(--border-slate);padding-top:7px">
+            💡 <em>${reason}</em>
+          </div>
+          <button onclick="logTradeFromRow(event, ${JSON.stringify(prefill).replace(/"/g,"'")})" style="background:var(--pro-electric);color:#fff;border:none;border-radius:6px;padding:6px 0;font-size:10px;cursor:pointer;font-weight:700;width:100%;display:flex;align-items:center;justify-content:center;gap:4px">
             <i class="ti ti-notebook"></i> Log Trade
           </button>
-        </div>
+        </div>`;
+    }).join('');
+
+    topOptHTML = `
+      <div>
+        <div style="font-size:9px;color:var(--text-muted);font-weight:700;text-transform:uppercase;margin-bottom:8px">🔥 Today's Top Opportunities</div>
+        <div style="display:flex;gap:10px;flex-wrap:wrap">${cards}</div>
       </div>`;
   } else {
     topOptHTML = `
@@ -3270,16 +3417,8 @@ function updateSidebarWidgets() {
     flowBias.style.color = netDominance >= 0 ? 'var(--pro-buy)' : 'var(--pro-sell)';
   }
 
-  // 3. Sector rotation strength
-  activeSectors = initialSectors.map(sec => {
-    const secStocks = stocks.filter(s => sectorMapping[s.symbol] === sec.name);
-    if (secStocks.length === 0) return sec;
-
-    const avgChg = parseFloat((secStocks.reduce((sum, s) => sum + (s.change || s.dist_from_entry), 0) / secStocks.length).toFixed(2));
-    const trend = avgChg > 0.4 ? 'up' : avgChg < -0.4 ? 'down' : 'neutral';
-    return { ...sec, change: avgChg, trend };
-  });
-
+  // 3. Sector rotation strength — activeSectors populated by fetchSectorRotation() every 5 min.
+  // Do NOT blend with scan results; show pure NSE index % change.
   const hGrid = document.getElementById('heatmapGrid');
   if (hGrid) {
     hGrid.innerHTML = activeSectors.map(s => {
@@ -3292,14 +3431,14 @@ function updateSidebarWidgets() {
         colors = "background: var(--bg-inner); border-color: var(--border-slate); color: var(--text-muted)";
       }
       const isActive = activeSector === s.name;
-      return `<button 
-        onclick="toggleSectorFilter('${s.name}')" 
-        style="${colors}" 
+      return `<button
+        onclick="toggleSectorFilter('${s.name}')"
+        style="${colors}"
         class="heatmap-btn ${isActive ? 'active' : ''}"
       >
         <span style="font-weight:700">${s.name}</span>
         <div style="font-size:9.5px;font-family:var(--font-mono);display:flex;justify-content:space-between;width:100%">
-          <span>${s.change > 0 ? '+' : ''}${s.change}%</span>
+          <span>${s.change > 0 ? '+' : ''}${Number(s.change).toFixed(2)}%</span>
           <span>${s.trend === 'up' ? '↑' : s.trend === 'down' ? '↓' : '→'}</span>
         </div>
       </button>`;
@@ -3937,7 +4076,12 @@ function render(isTick = false){
           `<br><span style="font-size:8.5px;color:var(--text-muted)">(Pivot)</span>`;
 
       const statusBadge = (() => {
-        if (Math.abs(displayDist) <= 2.0) {
+        const rawDist = s.dist_from_entry !== undefined ? s.dist_from_entry
+          : (s.entry ? ((s.price - s.entry) / s.entry) * 100 : 0);
+        // Price is BELOW the pivot entry — setup hasn't triggered yet (WATCH mode)
+        if (rawDist < -2.0) {
+          return `<span style="background:rgba(99,102,241,0.15); color:#818cf8; font-weight:800; padding:3px 8px; border-radius:4px; border:1px solid rgba(99,102,241,0.3); font-size:9.5px">BELOW PIVOT 📉</span>`;
+        } else if (Math.abs(displayDist) <= 2.0) {
           return `<span style="background:rgba(16,185,129,0.15); color:#34d399; font-weight:800; padding:3px 8px; border-radius:4px; border:1px solid rgba(16,185,129,0.3); font-size:9.5px">FRESH ✅</span>`;
         } else if (Math.abs(displayDist) <= 5.0) {
           return `<span style="background:rgba(245,158,11,0.15); color:#fbbf24; font-weight:800; padding:3px 8px; border-radius:4px; border:1px solid rgba(245,158,11,0.3); font-size:9.5px">EXTENDED ⚠️</span>`;
@@ -4247,6 +4391,9 @@ function startScan(){
         }
         return;
       }
+      // Immediately update timestamp to show scan is in progress
+      const ls = document.getElementById('lastScan');
+      if (ls) ls.textContent = 'Scanning... (started ' + new Date().toLocaleTimeString('en-IN', {hour:'2-digit', minute:'2-digit'}) + ')';
       showToast('Scan started in background\u2026');
       pollTimer=setInterval(checkStatus,1500);
       setScanningUI(true);
@@ -4828,6 +4975,11 @@ fetch('/status').then(r=>r.json()).then(d=>{
   // Server unreachable — show cold banner
   document.getElementById('coldBanner').classList.add('show');
 });
+
+// Fetch real sector index data on page load, refresh every 5 min
+fetchSectorRotation();
+if (activeSectors_fetchTimer) clearInterval(activeSectors_fetchTimer);
+activeSectors_fetchTimer = setInterval(fetchSectorRotation, 5 * 60 * 1000);
 </script>
 </body>
 </html>"""
