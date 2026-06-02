@@ -2107,8 +2107,8 @@ tbody tr:hover td:first-child {
     
     <label style="margin-left:8px"><i class="ti ti-eye"></i> Demo Data</label>
     <select id="demoDataSelect" onchange="savePrefs();render()">
-      <option value="show" selected>Include</option>
-      <option value="hide">Exclude</option>
+      <option value="show">Include</option>
+      <option value="hide" selected>Exclude</option>
     </select>
     
     <span id="countdownSpan" style="margin-left:5px;color:var(--pro-watch);font-weight:700;font-family:var(--font-mono)"></span>
@@ -4953,26 +4953,32 @@ setTab(activeTab);
 fetch('/status').then(r=>r.json()).then(d=>{
   document.getElementById('coldBanner').classList.remove('show');
   if(d.scanning){
-    // Server confirms scan is running — set UI accordingly
     setScanningUI(true);
     if(!pollTimer) pollTimer=setInterval(checkStatus,1500);
   } else {
-    // Server says NOT scanning — ensure UI is in idle state (clears any stale loading UI)
     setScanningUI(false);
     if(pollTimer){ clearInterval(pollTimer); pollTimer=null; }
-    if(d.signals&&d.signals.length>0){
-      stocks=preprocess(d.signals);
-      document.getElementById('lastScan').textContent=d.last_scan?'Last scan: '+d.last_scan:'';
+    if(d.signals && d.signals.length > 0){
+      // Real signals from server — always exclude demo stocks
+      const demoEl = document.getElementById('demoDataSelect');
+      if(demoEl) demoEl.value = 'hide';
+      stocks = preprocess(d.signals);
+      document.getElementById('lastScan').textContent = d.last_scan ? 'Last scan: ' + d.last_scan : '';
       updateSidebarWidgets();
       updateCounts();
       render();
+    } else {
+      // No scan ever run — show empty state, no mock stocks
+      const demoEl = document.getElementById('demoDataSelect');
+      if(demoEl) demoEl.value = 'hide';
+      stocks = [];
+      render(); // renders empty-state message
     }
-    if(d.error&&d.error!=='Scan cancelled'&&d.error!=='Scan stopped by user'){
-      showToast('Last scan error: '+d.error, true);
+    if(d.error && d.error !== 'Scan cancelled' && d.error !== 'Scan stopped by user'){
+      showToast('Last scan error: ' + d.error, true);
     }
   }
 }).catch(()=>{
-  // Server unreachable — show cold banner
   document.getElementById('coldBanner').classList.add('show');
 });
 
