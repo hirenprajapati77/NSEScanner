@@ -661,7 +661,12 @@ def analyse(
         df.dropna(inplace=True)
         
         # ── Live price + previous close via fast_info (cache-busted) ──
+        # Always create a FRESH Ticker object — never reuse across scans
         ticker_obj = yf.Ticker(ticker)
+        try:
+            ticker_obj._history = {}   # clear any in-process instance cache
+        except Exception:
+            pass
         year_high    = None
         year_low     = None
         live_price   = None

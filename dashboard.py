@@ -775,31 +775,38 @@ def journal_get():
     outcome = request.args.get("outcome")   # OPEN/WIN/LOSS/all
     trades  = get_trades(outcome=outcome if outcome != "all" else None)
 
-    # Enrich open trades with live LTP via yfinance fast_info
-    import yfinance as yf
+    # Enrich open trades: try scan cache first, then skip — /ltp_live handles live fetch
     state = _read_state()
     signals_list = state.get("signals", [])
     price_map = {str(s.get("symbol", "")).upper(): s.get("price")
                  for s in signals_list if s.get("symbol")}
 
     for t in trades:
-        if t.get("outcome") and t["outcome"] not in (None, "", "OPEN"):
-            continue  # closed trades don't need live LTP
         sym = str(t.get("symbol", "")).upper()
-        # 1. Try scan cache first (fastest)
         if sym in price_map:
             t["current_ltp"] = price_map[sym]
-            continue
-        # 2. Fetch live from yfinance fast_info
-        try:
-            ticker_obj = yf.Ticker(sym + ".NS")
-            live_ltp = ticker_obj.fast_info.get("last_price") or None
-            if live_ltp and live_ltp > 0:
-                t["current_ltp"] = round(float(live_ltp), 2)
-        except Exception:
-            pass  # leave current_ltp unset — UI shows —
 
     return jsonify({"trades": trades, "count": len(trades)})
+
+
+@app.route("/ltp_live")
+def ltp_live():
+    """Fetch live LTP for all open trades using yfinance fast_info — independent of scan."""
+    import yfinance as yf
+    from journal import get_trades
+    open_trades = [t for t in get_trades(outcome="OPEN") if t.get("symbol")]
+    result = {}
+    for t in open_trades:
+        sym = t["symbol"].strip().upper()
+        try:
+            ticker_obj = yf.Ticker(sym + ".NS")
+            ltp = ticker_obj.fast_info.get("last_price") or \
+                  ticker_obj.fast_info.get("previous_close") or None
+            if ltp and float(ltp) > 0:
+                result[sym] = round(float(ltp), 2)
+        except Exception:
+            result[sym] = None
+    return jsonify(result)
 
 
 @app.route("/journal", methods=["POST"])
@@ -2857,6 +2864,17 @@ function setTab(t){
   
   expandedSymbol = null;
   render();
+
+  // Live LTP polling: start when entering Journal tab, stop otherwise
+  if (t === 'journal') {
+    if (typeof fetchLiveLTP === 'function') {
+      fetchLiveLTP();
+      if (window._ltpRefreshTimer) clearInterval(window._ltpRefreshTimer);
+      window._ltpRefreshTimer = setInterval(fetchLiveLTP, 60000);
+    }
+  } else {
+    if (window._ltpRefreshTimer) { clearInterval(window._ltpRefreshTimer); window._ltpRefreshTimer = null; }
+  }
 }
 
 // ── Theme Swapper ────────────────────────────────────
@@ -4350,18 +4368,22 @@ function checkStatus(){
 function startScan(){
   // If there's a stale poll timer but server isn't actually scanning, clear it
   if(pollTimer){
-    // Quick server check — if not scanning, clear stale timer and proceed
     fetch('/status').then(r=>r.json()).then(d=>{
       if(!d.scanning){
         clearInterval(pollTimer); pollTimer=null;
         setScanningUI(false);
-        startScan(); // retry now that stale timer is cleared
+        startScan();
       } else {
         showToast('Scan already running. Use Stop to cancel it first.',true);
       }
     }).catch(()=>{ clearInterval(pollTimer); pollTimer=null; setScanningUI(false); });
     return;
   }
+
+  // Fix 2A: Update timestamp IMMEDIATELY before the fetch (instant feedback)
+  const ls = document.getElementById('lastScan');
+  if (ls) ls.textContent = 'Scanning\u2026 (started ' + new Date().toLocaleTimeString('en-IN', {hour:'2-digit', minute:'2-digit'}) + ')';
+
   const params={
     vol_days: document.getElementById('volDays').value,
     vol_mult: document.getElementById('volMult').value,
@@ -4382,18 +4404,13 @@ function startScan(){
   fetch('/scan',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(params)})
     .then(r=>r.json()).then(d=>{
       if(d.error){
-        // Show scan conflict errors prominently (e.g. 409 already running)
         showToast(d.error, true);
-        // If server says already scanning, sync the UI
         if(d.error.includes('already running')){
           setScanningUI(true);
           if(!pollTimer) pollTimer=setInterval(checkStatus,1500);
         }
         return;
       }
-      // Immediately update timestamp to show scan is in progress
-      const ls = document.getElementById('lastScan');
-      if (ls) ls.textContent = 'Scanning... (started ' + new Date().toLocaleTimeString('en-IN', {hour:'2-digit', minute:'2-digit'}) + ')';
       showToast('Scan started in background\u2026');
       pollTimer=setInterval(checkStatus,1500);
       setScanningUI(true);
@@ -4890,7 +4907,8 @@ function renderJournal() {
                          : isLoss ? 'background:rgba(244,63,94,0.1);color:var(--pro-sell);border:1px solid rgba(244,63,94,0.2)'
                          : 'background:rgba(245,158,11,0.1);color:var(--pro-watch);border:1px solid rgba(245,158,11,0.2)';
 
-      return `<tr>
+      // data-* attrs let fetchLiveLTP() inject prices without full re-render
+      return `<tr data-sym="${t.symbol}" data-entry="${t.entry_price||0}" data-qty="${t.quantity||0}" data-open="${isOpen?1:0}">
         <td>
           <span class="sym">${t.symbol}</span><br>
           <span style="${outcomeStyle};border-radius:4px;padding:2px 7px;font-size:9.5px;font-weight:800;display:inline-block;margin-top:2px">
@@ -4986,6 +5004,43 @@ fetch('/status').then(r=>r.json()).then(d=>{
 fetchSectorRotation();
 if (activeSectors_fetchTimer) clearInterval(activeSectors_fetchTimer);
 activeSectors_fetchTimer = setInterval(fetchSectorRotation, 5 * 60 * 1000);
+
+// ── Fix 1: Live LTP injector for Trade Ledger (every 60s, independent) ──
+let _ltpRefreshTimer = null;
+function fetchLiveLTP() {
+  fetch('/ltp_live')
+    .then(r => r.json())
+    .then(ltpMap => {
+      const rows = document.querySelectorAll('#tblBody tr[data-open="1"]');
+      rows.forEach(row => {
+        const sym   = row.getAttribute('data-sym');
+        const entry = parseFloat(row.getAttribute('data-entry') || 0);
+        const qty   = parseFloat(row.getAttribute('data-qty') || 0);
+        const ltp   = ltpMap[sym] || ltpMap[(sym||'').toUpperCase()];
+        if (!ltp) return;
+        const diff = ltp - entry;
+        const col  = diff >= 0 ? 'var(--pro-buy)' : 'var(--pro-sell)';
+        const cells = row.querySelectorAll('td');
+        // 6th column = LTP Now (index 5)
+        if (cells[5]) {
+          cells[5].innerHTML =
+            `<span style="color:${col};font-weight:700;font-family:var(--font-mono)">\u20b9${ltp.toLocaleString('en-IN',{minimumFractionDigits:2})}</span>` +
+            `<br><span style="font-size:8.5px;color:${col}">${diff>=0?'+':''}${diff.toFixed(2)}</span>`;
+        }
+        // 10th column = Live P&L (index 9)
+        if (cells[9] && qty > 0) {
+          const livePnl = (ltp - entry) * qty;
+          const pCol = livePnl >= 0 ? 'var(--pro-buy)' : 'var(--pro-sell)';
+          cells[9].innerHTML =
+            `<span style="color:${pCol};font-weight:800;font-family:var(--font-mono)">${livePnl>=0?'+':''}\u20b9${Math.abs(livePnl).toLocaleString('en-IN',{maximumFractionDigits:0})}</span>` +
+            `<br><span style="font-size:8.5px;color:${pCol}">\u26a1 LIVE</span>`;
+        }
+      });
+    })
+    .catch(() => {});
+}
+
+// LTP timer is managed inside setTab() above
 </script>
 </body>
 </html>"""
