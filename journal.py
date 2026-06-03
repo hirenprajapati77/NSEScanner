@@ -24,6 +24,15 @@ def get_conn():
 def init_db():
     """Create tables and run v5.0 migrations. Call on app startup."""
     with get_conn() as conn:
+        try:
+            cursor = conn.cursor()
+            cursor.execute("PRAGMA table_info(alert_history)")
+            cols = [r[1] for r in cursor.fetchall()]
+            if cols and 'alert_time' not in cols:
+                conn.execute("DROP TABLE alert_history")
+        except Exception:
+            pass
+
         conn.executescript("""
         CREATE TABLE IF NOT EXISTS trade_journal (
             id              INTEGER PRIMARY KEY AUTOINCREMENT,
