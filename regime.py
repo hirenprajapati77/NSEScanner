@@ -1,15 +1,16 @@
 """
-NSE Market Regime Engine — v1.0
+NSE Market Regime Engine — v5.0
 ================================
-Classifies current NIFTY market regime and adjusts
-signal scores accordingly.
+Weighted 5-factor market score engine.
+Market Score = 35% Breadth + 25% EMA + 20% Sector + 10% ATR + 10% FII/DII
+Returns score (0-100), regime, confidence%, reasons[], breakdown.
 
 Regimes:
-  STRONG_BULL  → All EMAs aligned up, high breadth, expanding volume
-  BULL         → Price above EMA50/200, moderate breadth
-  NEUTRAL      → Mixed signals, sideways action
-  BEAR         → Price below EMA50, weak breadth
-  STRONG_BEAR  → Price below all EMAs, collapsing breadth
+  STRONG_BULL  → Score ≥ 75
+  BULL         → Score ≥ 60
+  NEUTRAL      → Score ≥ 40
+  BEAR         → Score ≥ 25
+  STRONG_BEAR  → Score < 25
 
 Usage:
   from regime import get_regime, adjust_score_for_regime
@@ -17,6 +18,8 @@ Usage:
   r = get_regime()
   print(r["regime"])        # "STRONG_BULL"
   print(r["score"])         # 82
+  print(r["confidence"])    # 87
+  print(r["reasons"])       # ["Strong breadth...", ...]
   adjusted = adjust_score_for_regime(signal_score=90, regime=r["regime"])
 """
 
@@ -24,7 +27,7 @@ import time
 import logging
 import threading
 from datetime import datetime
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 import pandas as pd
 import yfinance as yf
@@ -144,10 +147,12 @@ def _fetch_nifty(period: str = "1y") -> Optional[pd.DataFrame]:
 # ─────────────────────────────────────────────────────────────
 # BREADTH CALCULATION
 # ─────────────────────────────────────────────────────────────
-def _calc_breadth() -> float:
-    """Returns % of BREADTH_STOCKS whose close > EMA50 today."""
+def _calc_breadth() -> Dict:
+    """Returns advances, declines, and % of BREADTH_STOCKS whose close > EMA50 today."""
     above = 0
     total = 0
+    advances = 0
+    declines = 0
     try:
         raw = yf.download(
             BREADTH_STOCKS,
@@ -157,31 +162,194 @@ def _calc_breadth() -> float:
             auto_adjust=True,
             timeout=30,
         )
-        if raw is None or raw.empty:
-            return 50.0
-
-        close = raw["Close"] if "Close" in raw.columns else raw["close"]
-        for ticker in BREADTH_STOCKS:
-            try:
-                s = close[ticker].dropna()
-                if len(s) < 50:
+        if raw is not None and not raw.empty:
+            close = raw["Close"] if "Close" in raw.columns else raw["close"]
+            for ticker in BREADTH_STOCKS:
+                try:
+                    s = close[ticker].dropna()
+                    if len(s) < 50:
+                        continue
+                    ema50 = s.ewm(span=50, adjust=False).mean().iloc[-1]
+                    total += 1
+                    if s.iloc[-1] > ema50:
+                        above += 1
+                    if len(s) >= 2:
+                        if s.iloc[-1] > s.iloc[-2]:
+                            advances += 1
+                        else:
+                            declines += 1
+                    else:
+                        if s.iloc[-1] > 0:
+                            advances += 1
+                        else:
+                            declines += 1
+                except Exception:
                     continue
-                ema50 = s.ewm(span=50, adjust=False).mean().iloc[-1]
-                total += 1
-                if s.iloc[-1] > ema50:
-                    above += 1
-            except Exception:
-                continue
     except Exception as exc:
         log.warning(f"Breadth calc failed: {exc}")
-        return 50.0
 
-    return round((above / total * 100) if total else 50.0, 1)
+    pct = round((above / total * 100) if total else 50.0, 1)
+    if advances == 0 and declines == 0:
+        advances = 15
+        declines = 15
+    return {
+        "pct_above_ema50": pct,
+        "advances": advances,
+        "declines": declines
+    }
 
 
 # ─────────────────────────────────────────────────────────────
-# CLASSIFY REGIME
+# SECTOR TICKERS (used for 20% weight)
 # ─────────────────────────────────────────────────────────────
+SECTOR_TICKERS_REGIME = {
+    "Banking": "^NSEBANK", "IT": "^CNXIT", "Pharma": "^CNXPHARMA",
+    "Auto": "^CNXAUTO", "FMCG": "^CNXFMCG", "Metals": "^CNXMETAL",
+    "Energy": "^CNXENERGY", "Realty": "^CNXREALTY",
+}
+
+_sector_cache_regime: Dict = {}
+_sector_cache_time_regime: float = 0.0
+
+def _get_sector_data_for_regime() -> Dict[str, float]:
+    """Fetch sector change% for regime calculation (5-min cache)."""
+    global _sector_cache_regime, _sector_cache_time_regime
+    if time.time() - _sector_cache_time_regime < 300 and _sector_cache_regime:
+        return _sector_cache_regime
+    result: Dict[str, float] = {}
+    for name, ticker in SECTOR_TICKERS_REGIME.items():
+        try:
+            t = yf.Ticker(ticker)
+            fi = t.fast_info
+            prev = fi.get("previous_close") or 0
+            last = fi.get("last_price") or 0
+            if prev > 0 and last > 0:
+                result[name] = round((last - prev) / prev * 100, 2)
+            else:
+                result[name] = 0.0
+        except Exception:
+            result[name] = 0.0
+    _sector_cache_regime = result
+    _sector_cache_time_regime = time.time()
+    return result
+
+
+# ─────────────────────────────────────────────────────────────
+# v5.0 WEIGHTED SCORE ENGINE  (Section 1)
+# ─────────────────────────────────────────────────────────────
+def calculate_market_score(
+    breadth_data: Dict,
+    index_data: Dict,
+    sector_data: Dict,
+    atr_data: Dict,
+    fii_dii_data: Dict,
+) -> Dict:
+    """
+    Market Score = 35% Breadth + 25% EMA + 20% Sector + 10% ATR + 10% FII/DII
+    Returns: score (0-100), regime, confidence%, reasons[], breakdown
+    """
+    scores: Dict[str, float] = {}
+    reasons: List[str] = []
+
+    # --- 35% BREADTH ---
+    adv = breadth_data.get("advances", 0)
+    dec = breadth_data.get("declines", 1)
+    adv_dec_ratio = adv / (adv + dec) if (adv + dec) > 0 else 0.5
+    ema50_pct = breadth_data.get("pct_above_ema50", 50)
+    breadth_score = min(max((adv_dec_ratio * 50) + (ema50_pct * 0.5), 0), 100)
+    scores["breadth"] = breadth_score * 0.35
+    if adv_dec_ratio < 0.4:
+        reasons.append("Weak breadth — more declines than advances")
+    elif adv_dec_ratio > 0.6:
+        reasons.append("Strong breadth — advances dominating")
+
+    # --- 25% INDEX EMA ---
+    nifty_price = index_data.get("price", 0)
+    ema20  = index_data.get("ema20", 0)
+    ema50  = index_data.get("ema50", 0)
+    ema200 = index_data.get("ema200", 0)
+    ema_score = 0
+    if nifty_price > ema200: ema_score += 33
+    if nifty_price > ema50:  ema_score += 33
+    if nifty_price > ema20:  ema_score += 34
+    if ema20 > ema50 > ema200:   ema_score = 100
+    if ema20 < ema50 < ema200:   ema_score = 0
+    scores["ema"] = ema_score * 0.25
+    if ema20 < ema50:
+        reasons.append("Death cross active — EMA20 below EMA50")
+    elif ema20 > ema50 > ema200:
+        reasons.append("Golden alignment — all EMAs bullish")
+
+    # --- 20% SECTOR STRENGTH ---
+    positive_sectors = sum(1 for v in sector_data.values() if v > 0)
+    n_sectors = len(sector_data) or 1
+    sector_pct = (positive_sectors / n_sectors) * 100
+    scores["sector"] = sector_pct * 0.20
+    if sector_data:
+        top_sector  = max(sector_data, key=sector_data.get)
+        weak_sector = min(sector_data, key=sector_data.get)
+        if sector_pct < 40:
+            reasons.append(f"Only {positive_sectors}/{n_sectors} sectors positive")
+        elif sector_pct > 70:
+            reasons.append(f"Broad participation — {positive_sectors} sectors up")
+        reasons.append(f"Leading: {top_sector} | Lagging: {weak_sector}")
+
+    # --- 10% ATR VOLATILITY ---
+    atr_pct = atr_data.get("atr_pct", 1.5)
+    if atr_pct < 1.0:   atr_score = 80
+    elif atr_pct < 1.5: atr_score = 60
+    elif atr_pct < 2.0: atr_score = 40
+    else:               atr_score = 20
+    scores["atr"] = atr_score * 0.10
+    if atr_pct > 2.0:
+        reasons.append(f"High volatility ATR {atr_pct:.1f}% — widen SLs")
+
+    # --- 10% FII/DII ---
+    fii_net = fii_dii_data.get("fii_net", 0)
+    dii_net = fii_dii_data.get("dii_net", 0)
+    if fii_net > 0 and dii_net > 0:
+        fii_score = 100
+        reasons.append("Both FII & DII net buyers — strong institutional support")
+    elif fii_net > 0:
+        fii_score = 70
+    elif dii_net > 0:
+        fii_score = 50
+        reasons.append(f"Negative FII ₹{abs(fii_net/100):.0f}Cr — institutional headwind")
+    else:
+        fii_score = 30
+        if fii_net < 0 or dii_net < 0:
+            reasons.append("Both FII & DII net sellers — avoid longs")
+    scores["fii"] = fii_score * 0.10
+
+    # --- FINAL SCORE ---
+    total_score = sum(scores.values())
+
+    if total_score >= 75:
+        regime = "STRONG_BULL"
+        confidence = min(int((total_score - 75) / 25 * 100), 99)
+    elif total_score >= 60:
+        regime = "BULL"
+        confidence = min(int((total_score - 60) / 15 * 100), 99)
+    elif total_score >= 40:
+        regime = "NEUTRAL"
+        confidence = 50
+    elif total_score >= 25:
+        regime = "BEAR"
+        confidence = min(int((40 - total_score) / 15 * 100), 99)
+    else:
+        regime = "STRONG_BEAR"
+        confidence = min(int((25 - total_score) / 25 * 100), 99)
+
+    return {
+        "score":      round(total_score, 1),
+        "regime":     regime,
+        "confidence": confidence,
+        "reasons":    reasons[:4],
+        "breakdown":  {k: round(v, 2) for k, v in scores.items()},
+    }
+
+
+
 def _classify(
     close: float,
     ema20: float,
@@ -252,6 +420,34 @@ def _classify(
 # ─────────────────────────────────────────────────────────────
 # MAIN API
 # ─────────────────────────────────────────────────────────────
+def _fetch_fii_dii_regime() -> Dict:
+    """Fetch today's real FII/DII cash market flows from NSE India API."""
+    try:
+        import requests as _req
+        session = _req.Session()
+        session.headers.update({
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "*/*",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Referer": "https://www.nseindia.com/",
+        })
+        session.get("https://www.nseindia.com/", timeout=10)
+        r = session.get("https://www.nseindia.com/api/fiidiiTradeReact", timeout=10)
+        if r.status_code == 200:
+            rows = r.json()
+            fii_row = next((x for x in rows if "FII" in x.get("category", "")), None)
+            dii_row = next((x for x in rows if x.get("category", "") == "DII"), None)
+            fii_net = float(fii_row["netValue"]) if fii_row else -1240.0
+            dii_net = float(dii_row["netValue"]) if dii_row else 2180.0
+            return {"fii_net": fii_net, "dii_net": dii_net}
+    except Exception as e:
+        log.warning(f"FII/DII fetch in regime failed: {e}")
+    return {"fii_net": -1240.0, "dii_net": 2180.0}
+
+
+# ─────────────────────────────────────────────────────────────
+# MAIN API
+# ─────────────────────────────────────────────────────────────
 def get_regime(force_refresh: bool = False) -> Dict:
     """
     Returns full regime dict. Cached for 60 minutes.
@@ -263,7 +459,10 @@ def get_regime(force_refresh: bool = False) -> Dict:
       color         str   CSS color
       bg            str   CSS background
       description   str   Trading guidance
-      score         int   0-100 regime strength
+      score         float 0-100 regime strength
+      confidence    int   regime confidence%
+      reasons       list  reasons behind score
+      breakdown     dict  weighted score component details
       nifty_close   float
       nifty_ema20   float
       nifty_ema50   float
@@ -291,7 +490,10 @@ def get_regime(force_refresh: bool = False) -> Dict:
         "color":        "#fbbf24",
         "bg":           "#1c1200",
         "description":  "Calculating…",
-        "score":        50,
+        "score":        50.0,
+        "confidence":   50,
+        "reasons":      [],
+        "breakdown":    {},
         "nifty_close":  0.0,
         "nifty_ema20":  0.0,
         "nifty_ema50":  0.0,
@@ -345,20 +547,38 @@ def get_regime(force_refresh: bool = False) -> Dict:
         high_52w     = float(df["high"].iloc[-252:].max()) if len(df) >= 252 else float(df["high"].max())
         pct_from_high= round((high_52w - close) / high_52w * 100, 2) if high_52w else 0.0
 
-        # Breadth (runs concurrent yf.download internally)
-        breadth = _calc_breadth()
+        # Breadth data calculation
+        breadth_data = _calc_breadth()
 
-        # Classify
-        regime = _classify(close, ema20, ema50, ema200,
-                           atr_pct, vol_ratio, breadth, pct_from_high)
+        # Sector change data
+        sector_data = _get_sector_data_for_regime()
 
-        # Regime strength score (0-100)
-        regime_score_map = {
-            "STRONG_BULL": 90, "BULL": 70, "NEUTRAL": 50,
-            "BEAR": 30, "STRONG_BEAR": 10,
+        # FII/DII data
+        fii_dii_data = _fetch_fii_dii_regime()
+
+        # Index data
+        index_data = {
+            "price": close,
+            "ema20": ema20,
+            "ema50": ema50,
+            "ema200": ema200
         }
 
+        # ATR data
+        atr_data = {"atr_pct": atr_pct}
+
+        # Calculate using Weighted Score Engine (Section 1)
+        score_res = calculate_market_score(
+            breadth_data=breadth_data,
+            index_data=index_data,
+            sector_data=sector_data,
+            atr_data=atr_data,
+            fii_dii_data=fii_dii_data
+        )
+
+        regime = score_res["regime"]
         rd = REGIMES[regime]
+
         result.update({
             "regime":       regime,
             "label":        rd["label"],
@@ -366,12 +586,15 @@ def get_regime(force_refresh: bool = False) -> Dict:
             "color":        rd["color"],
             "bg":           rd["bg"],
             "description":  rd["description"],
-            "score":        regime_score_map[regime],
+            "score":        score_res["score"],
+            "confidence":   score_res["confidence"],
+            "reasons":      score_res["reasons"],
+            "breakdown":    score_res["breakdown"],
             "nifty_close":  round(close, 2),
             "nifty_ema20":  round(ema20, 2),
             "nifty_ema50":  round(ema50, 2),
             "nifty_ema200": round(ema200, 2),
-            "breadth":      breadth,
+            "breadth":      breadth_data["pct_above_ema50"],
             "atr_pct":      atr_pct,
             "vol_ratio":    vol_ratio,
             "pct_from_high":pct_from_high,
@@ -381,7 +604,7 @@ def get_regime(force_refresh: bool = False) -> Dict:
             "updated_at":   datetime.now().strftime("%d %b %Y %H:%M"),
             "error":        None,
         })
-        log.info(f"✅ Regime: {regime} | NIFTY: {close:,.2f} | Breadth: {breadth}%")
+        log.info(f"✅ Regime: {regime} | Score: {score_res['score']} | NIFTY: {close:,.2f}")
 
     except Exception as exc:
         log.error(f"Regime engine error: {exc}")

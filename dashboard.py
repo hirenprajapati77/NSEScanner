@@ -42,6 +42,9 @@ from scanner import (
 # ─────────────────────────────────────────────────────────────
 app = Flask(__name__)
 
+from admin_routes import admin_bp
+app.register_blueprint(admin_bp)
+
 STATUS_FILE    = "scan_status.json"
 CONFIG_FILE    = "config.json"
 WATCHLIST_FILE = "watchlist.json"
@@ -752,6 +755,17 @@ def save_config_route():
 
 @app.route("/watchlist", methods=["GET"])
 def get_watchlist():
+    import sqlite3
+    import journal
+    try:
+        conn = sqlite3.connect(journal.DB_PATH)
+        rows = conn.execute("SELECT symbol FROM watchlist").fetchall()
+        conn.close()
+        symbols = [r[0] for r in rows]
+        if symbols:
+            return jsonify({"watchlist": symbols})
+    except Exception:
+        pass
     return jsonify({"watchlist": _load_watchlist()})
 
 
@@ -760,7 +774,79 @@ def update_watchlist():
     data = request.get_json(force=True, silent=True) or {}
     wl   = data.get("watchlist", [])
     _save_watchlist(wl)
+    
+    # Sync with SQLite watchlist table
+    import sqlite3
+    import journal
+    try:
+        conn = sqlite3.connect(journal.DB_PATH)
+        if wl:
+            placeholders = ",".join("?" for _ in wl)
+            conn.execute(f"DELETE FROM watchlist WHERE symbol NOT IN ({placeholders})", wl)
+        else:
+            conn.execute("DELETE FROM watchlist")
+            
+        state = _read_state()
+        active_signals = {s["symbol"]: s for s in state.get("signals", [])}
+        
+        for sym in wl:
+            row = conn.execute("SELECT id FROM watchlist WHERE symbol=?", (sym,)).fetchone()
+            if not row:
+                sig = active_signals.get(sym, {})
+                entry = sig.get("entry", sig.get("price", 0.0))
+                sl = sig.get("stop_loss", entry * 0.985)
+                target = sig.get("target", entry * 1.03)
+                sector = sig.get("sector", "")
+                conn.execute("""
+                    INSERT OR IGNORE INTO watchlist (symbol, entry_price, sl, target, sector)
+                    VALUES (?, ?, ?, ?, ?)
+                """, (sym, entry, sl, target, sector))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"[warn] Watchlist SQLite sync failed: {e}")
+        
     return jsonify({"ok": True, "count": len(wl)})
+
+
+@app.route("/watchlist/status", methods=["GET"])
+def get_watchlist_status_route():
+    from watchlist import get_watchlist_status
+    from data_fetcher import get_stock_price
+    import journal
+    
+    results = []
+    try:
+        conn = sqlite3.connect(journal.DB_PATH)
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute("SELECT * FROM watchlist").fetchall()
+        conn.close()
+        
+        for row in rows:
+            stock = dict(row)
+            symbol = stock["symbol"]
+            ltp, _ = get_stock_price(symbol)
+            if not ltp:
+                ltp = stock["entry_price"] or 0.0
+                
+            status_data = get_watchlist_status(stock, stock["entry_price"], stock["sl"], stock["target"], ltp)
+            results.append({
+                "symbol": symbol,
+                "sector": stock["sector"],
+                "notes": stock["notes"],
+                "status": status_data["status"],
+                "color": status_data["color"],
+                "entry": status_data["entry"],
+                "sl": status_data["sl"],
+                "target": status_data["target"],
+                "ltp": ltp,
+                "rr": status_data["current_rr"],
+                "dist": status_data["dist_to_entry"]
+            })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+        
+    return jsonify({"watchlist_status": results})
 
 
 @app.route("/regime")
@@ -775,18 +861,50 @@ def journal_get():
     outcome = request.args.get("outcome")   # OPEN/WIN/LOSS/all
     trades  = get_trades(outcome=outcome if outcome != "all" else None)
 
-    # Enrich open trades: try scan cache first, then skip — /ltp_live handles live fetch
-    state = _read_state()
-    signals_list = state.get("signals", [])
-    price_map = {str(s.get("symbol", "")).upper(): s.get("price")
-                 for s in signals_list if s.get("symbol")}
+    from data_fetcher import get_stock_price
+    from trade_ledger import get_trade_metrics
 
     for t in trades:
+        # sqlite3 Row must be converted to a dict first if it isn't already,
+        # but get_trades already returns a list of dictionaries! So it is mutable.
         sym = str(t.get("symbol", "")).upper()
-        if sym in price_map:
-            t["current_ltp"] = price_map[sym]
+        
+        # Get live ltp
+        ltp, source = get_stock_price(sym)
+        if not ltp:
+            # Fallback to the scan cache price
+            state = _read_state()
+            signals_list = state.get("signals", [])
+            price_map = {str(s.get("symbol", "")).upper(): s.get("price") for s in signals_list if s.get("price")}
+            ltp = price_map.get(sym, t.get("entry_price", 0.0))
+            
+        t["current_ltp"] = ltp
+        
+        # Calculate live metrics
+        try:
+            metrics = get_trade_metrics(t, ltp)
+            t["mtm"] = metrics["mtm"]
+            t["days_held"] = metrics["days"]
+            t["status"] = metrics["status"]
+            t["status_color"] = metrics["status_color"]
+            t["current_rr"] = metrics["current_rr"]
+        except Exception:
+            pass
 
     return jsonify({"trades": trades, "count": len(trades)})
+
+
+@app.route("/api/backtest", methods=["GET", "POST"])
+def backtest_route():
+    from backtest import run_backtest
+    symbol = request.args.get("symbol") or (request.get_json(force=True, silent=True) or {}).get("symbol")
+    years = int(request.args.get("years", "1"))
+    if not symbol:
+        return jsonify({"error": "Symbol is required"}), 400
+    res = run_backtest(symbol, years)
+    if not res:
+        return jsonify({"error": "No trade data or history found for backtesting"}), 404
+    return jsonify(res)
 
 
 @app.route("/ltp_live")
@@ -1876,6 +1994,43 @@ tbody tr:hover td:first-child {
     .action-bar button { width: 100%; justify-content: center; }
     .modal { width: 95% !important; }
     .m-hide { display: none !important; }
+
+    /* Sticky filters */
+    .scanner-filters, .controls {
+        position: sticky;
+        top: 60px;
+        z-index: 30;
+        background: var(--bg-primary);
+        padding: 8px;
+    }
+    
+    /* Horizontal scroll table */
+    .scanner-table-wrapper, .tbl-wrap {
+        overflow-x: auto;
+        -webkit-overflow-scrolling: touch;
+    }
+    
+    .scanner-table, #mainTradingTable {
+        min-width: 800px;  /* force horizontal scroll */
+    }
+    
+    /* Improved row spacing */
+    .scanner-table td, #mainTradingTable td {
+        padding: 10px 8px;  /* was 6px */
+        white-space: nowrap;
+    }
+    
+    /* Faster rendering */
+    .scanner-table tbody tr, #mainTradingTable tbody tr {
+        contain: layout style;  /* CSS containment */
+        will-change: auto;
+    }
+    
+    /* Touch-friendly buttons */
+    .action-btn {
+        min-height: 40px;
+        min-width: 40px;
+    }
   }
 </style>
 </head>
@@ -3958,6 +4113,13 @@ function render(isTick = false){
       <th class="m-hide">EMAs Alignment</th>
       <th onclick="sortBy('vol_ratio')" class="m-hide">Volume spike <span class="sort-icon" id="si-vol_ratio"><i class="ti ti-selector"></i></span></th>
       <th class="m-hide">Candle Pattern</th>
+      <th>CMP</th>
+      <th>Trigger</th>
+      <th>SL</th>
+      <th>T1</th>
+      <th>T2</th>
+      <th>RR</th>
+      <th>Age</th>
       <th>Trade</th>
       <th class="m-hide"><i class="ti ti-star"></i> Watch</th>
     </tr>`;
@@ -4187,6 +4349,13 @@ function render(isTick = false){
           <br><span style="font-size:10px;color:var(--text-muted);font-family:var(--font-mono)">${s.vol_ratio.toFixed(1)}x</span>
         </td>
         <td class="m-hide"><span class="${s.candle==='Bull'?'up':'dn'}">${s.candle==='Bull'?'🟢 Bull':'🔴 Bear'}</span></td>
+        <td class="font-mono">₹${(s.cmp || s.price).toFixed(2)}</td>
+        <td class="font-mono" style="color: #60a5fa">₹${(s.trigger || s.entry || pivots).toFixed(2)}</td>
+        <td class="font-mono" style="color: var(--pro-sell)">₹${(s.sl || s.stop_loss || stopLosses).toFixed(2)}</td>
+        <td class="font-mono" style="color: var(--pro-buy)">₹${(s.t1 || s.target || targets1).toFixed(2)}</td>
+        <td class="font-mono" style="color: var(--pro-buy)">₹${(s.t2 || s.target2 || targets2).toFixed(2)}</td>
+        <td class="font-mono" style="color: ${(s.rr || rrVal) >= 3.0 ? 'var(--pro-buy)' : (s.rr || rrVal) >= 1.5 ? 'var(--pro-watch)' : 'var(--pro-sell)'}">${(s.rr || rrVal).toFixed(2)}:1</td>
+        <td><span class="age-badge" style="color:${s.age_color || '#9ca3af'};font-weight:700">${s.signal_age || 'LIVE'}</span></td>
         <td>
           <button onclick="logTradeFromRow(event, ${JSON.stringify({
             symbol: s.symbol,

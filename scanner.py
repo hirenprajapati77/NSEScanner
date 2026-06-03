@@ -1137,32 +1137,113 @@ def analyse(
             **ema_checks,
         }
 
-        result["score"] = compute_score(result, bearish=bearish)
-        
-        # ── High Priority Improvement #3: Confidence Grading Engine ───
-        score = result["score"]
-        if score >= 95:
-            result["confidence"] = "A+"
-            result["signal_strength"] = "Institutional Strong"
-        elif score >= 85:
-            result["confidence"] = "A"
-            result["signal_strength"] = "Strong Momentum"
-        elif score >= 70:
-            result["confidence"] = "B"
-            result["signal_strength"] = "Moderate Setup"
-        elif score >= 55:
-            result["confidence"] = "C"
-            result["signal_strength"] = "Weak Signal"
-        else:
-            result["confidence"] = "D"
-            result["signal_strength"] = "Avoid"
+        # Upgraded scoring, momentum, and new columns logic (v5.0)
+        from score_engine import calculate_score
+        from scanner_momentum import check_buy_signal, check_sell_signal
+        from sector_rotation import STOCK_SECTOR_MAP
+        from scanner_core import get_sector_data_cached
 
-        if score < cfg["MIN_SCORE"]:
+        clean_sym = ticker.replace(".NS", "")
+        sector_name = STOCK_SECTOR_MAP.get(clean_sym, "General Equity")
+        result["sector"] = sector_name
+
+        # Calculate H5 & H6
+        trigger = cam["H4"]
+        sl = cam["L3"]
+        t1 = round((hv_high / hv_low) * close, 2) if hv_low else round(close * 1.05, 2)
+        t2 = round(t1 + 1.168 * (t1 - trigger), 2)
+        dist_pct = abs((close - trigger) / trigger * 100) if trigger else 0.0
+
+        # Step 13 columns
+        result["cmp"] = close
+        result["trigger"] = trigger
+        result["sl"] = sl
+        result["t1"] = t1
+        result["t2"] = t2
+        result["rr"] = round((t1 - trigger) / (trigger - sl), 2) if (trigger - sl) > 0 else 0.0
+        
+        # Signal Age & Entry color helpers
+        def _get_signal_age(scan_time):
+            now = datetime.now()
+            diff_mins = (now - scan_time).seconds // 60
+            if diff_mins < 5:
+                return "NEW", "#00ff88"
+            elif diff_mins < 30:
+                return "HOT", "#ffa500"
+            elif diff_mins < 120:
+                return "ACTIVE", "#60a5fa"
+            elif scan_time.date() == now.date():
+                return "LIVE", "#9ca3af"
+            else:
+                return "LAST SESSION", "#ef4444"
+
+        def _get_entry_color(dist_pct_val):
+            if dist_pct_val <= 1.0:
+                return "#00ff88"
+            elif dist_pct_val <= 2.0:
+                return "#ffa500"
+            elif dist_pct_val <= 5.0:
+                return "#ef4444"
+            else:
+                return "#6b7280"
+
+        age_label, age_color = _get_signal_age(datetime.now())
+        result["signal_age"] = age_label
+        result["age_color"] = age_color
+        result["entry_color"] = _get_entry_color(dist_pct)
+        result["dist_pct"] = dist_pct
+
+        # Fetch sector and market data for scoring
+        sector_perf = get_sector_data_cached()
+        nifty_regime = get_regime()
+
+        # Score calculations
+        score_res = calculate_score(result, sector_perf, nifty_regime)
+        result["score"] = score_res["total"]
+        result["confidence"] = score_res["grade"]
+        result["score_breakdown"] = score_res["breakdown"]
+
+        # Dynamic signal strength
+        if score_res["total"] >= 90:
+            result["signal_strength"] = "Institutional Strong"
+        elif score_res["total"] >= 80:
+            result["signal_strength"] = "Strong Momentum"
+        elif score_res["total"] >= 70:
+            result["signal_strength"] = "Moderate Setup"
+        else:
+            result["signal_strength"] = "Weak Signal"
+
+        # Check strict buy/sell conditions
+        if not bearish:
+            ok, explanation = check_buy_signal(result, nifty_regime)
+            if not ok:
+                if explain_skip:
+                    return {
+                        "symbol": clean_sym,
+                        "skipped": True,
+                        "reason": f"Momentum failed — {explanation['failed'][0] if explanation['failed'] else 'Unknown'}"
+                    }
+                return None
+            result["signal_explanation"] = explanation
+        else:
+            ok, reason = check_sell_signal(result)
+            if not ok:
+                if explain_skip:
+                    return {
+                        "symbol": clean_sym,
+                        "skipped": True,
+                        "reason": f"Momentum failed — L4 not broken"
+                    }
+                return None
+            result["signal_explanation"] = {"passed": [reason], "failed": [], "entry": trigger, "sl": sl, "t1": t1, "rr": result["rr"]}
+
+        # Check score limit
+        if result["score"] < cfg["MIN_SCORE"]:
             if explain_skip:
                 return {
-                    "symbol": ticker.replace(".NS", ""),
+                    "symbol": clean_sym,
                     "skipped": True,
-                    "reason": f"Momentum score too low ({score}/100 < {cfg['MIN_SCORE']})"
+                    "reason": f"Momentum score too low ({result['score']}/100 < {cfg['MIN_SCORE']})"
                 }
             return None
 

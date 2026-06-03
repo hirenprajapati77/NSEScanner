@@ -22,7 +22,7 @@ def get_conn():
 
 
 def init_db():
-    """Create table if not exists. Call on app startup."""
+    """Create tables and run v5.0 migrations. Call on app startup."""
     with get_conn() as conn:
         conn.executescript("""
         CREATE TABLE IF NOT EXISTS trade_journal (
@@ -64,7 +64,56 @@ def init_db():
             ON trade_journal(outcome);
         CREATE INDEX IF NOT EXISTS idx_journal_date
             ON trade_journal(signal_date);
+
+        -- v5.0: Alert history audit table (Section 7)
+        CREATE TABLE IF NOT EXISTS alert_history (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            symbol      TEXT NOT NULL,
+            score       REAL,
+            entry       REAL,
+            sl          REAL,
+            target      REAL,
+            rr          REAL,
+            rvol        REAL,
+            regime      TEXT,
+            alert_time  TEXT DEFAULT (datetime('now','localtime')),
+            channel     TEXT DEFAULT 'telegram'
+        );
+        CREATE INDEX IF NOT EXISTS idx_alerts_symbol ON alert_history(symbol);
+        CREATE INDEX IF NOT EXISTS idx_alerts_time   ON alert_history(alert_time);
+
+        -- v5.0: watchlist table (Section 5)
+        CREATE TABLE IF NOT EXISTS watchlist (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            symbol      TEXT NOT NULL UNIQUE,
+            entry_price REAL,
+            sl          REAL,
+            target      REAL,
+            sector      TEXT DEFAULT '',
+            notes       TEXT DEFAULT '',
+            added_date  TEXT DEFAULT (datetime('now','localtime')),
+            manually_closed INTEGER DEFAULT 0
+        );
+        CREATE INDEX IF NOT EXISTS idx_watchlist_symbol ON watchlist(symbol);
         """)
+
+        # v5.0 ALTER TABLE migrations — safe on existing DB
+        for migration in [
+            "ALTER TABLE trade_journal ADD COLUMN status TEXT DEFAULT 'OPEN'",
+            "ALTER TABLE trade_journal ADD COLUMN days_held INTEGER DEFAULT 0",
+            "ALTER TABLE trade_journal ADD COLUMN exit_price REAL",
+            "ALTER TABLE trade_journal ADD COLUMN mtm REAL DEFAULT 0",
+        ]:
+            try:
+                conn.execute(migration)
+            except Exception:
+                pass  # column already exists — safe to ignore
+
+        # Indexes on new columns
+        try:
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_trades_status ON trade_journal(status)")
+        except Exception:
+            pass
 
 
 def add_trade(data: Dict) -> int:
