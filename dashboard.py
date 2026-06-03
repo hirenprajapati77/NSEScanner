@@ -2379,6 +2379,40 @@ tbody tr:hover td:first-child {
         </div>
       </div>
 
+      <!-- Option Chain PCR widget (Bank Nifty) -->
+      <div class="widget-card">
+        <div class="widget-header">
+          <div class="w-2.5 h-2.5 rounded-full bg-cyan-500 animate-pulse"></div>
+          <span>OI Pulse (Bank Nifty)</span>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:8px">
+          <div style="display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid #111827;padding-bottom:6px">
+            <span style="font-size:11px;color:var(--text-muted)">Put-Call Ratio (PCR)</span>
+            <span id="bn-oi-pcr" style="font-weight:800;font-family:var(--font-mono);padding:2px 8px;border-radius:4px" class="neutral">1.15</span>
+          </div>
+          <div style="display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid #111827;padding-bottom:6px">
+            <span style="font-size:11px;color:var(--text-muted)">Max Pain strike</span>
+            <span id="bn-oi-maxpain" style="font-weight:700;font-family:var(--font-mono);color:var(--text-primary)">48,500</span>
+          </div>
+          <div style="display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid #111827;padding-bottom:6px">
+            <span style="font-size:11px;color:var(--text-muted)">Call Build (Resistance)</span>
+            <span id="bn-oi-resistance" style="font-weight:700;font-family:var(--font-mono);color:var(--pro-sell)">48,700</span>
+          </div>
+          <div style="display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid #111827;padding-bottom:6px">
+            <span style="font-size:11px;color:var(--text-muted)">Put Build (Support)</span>
+            <span id="bn-oi-support" style="font-weight:700;font-family:var(--font-mono);color:var(--pro-buy)">48,100</span>
+          </div>
+          
+          <div class="mt-2 bg-amber-950/40 border border-amber-900/60 rounded-lg p-2 flex items-start gap-1.5" id="bn-oi-trap-box" style="display:none">
+            <i class="ti ti-shield-alert" style="color:var(--pro-watch);font-size:14px;margin-top:2px"></i>
+            <div>
+              <div style="font-size:10px;font-weight:800;color:#fbbf24" id="bn-oi-trap-title">CE WRITERS TRAPPED</div>
+              <div style="font-size:9px;color:#f59e0b;line-height:1.2;margin-top:2px" id="bn-oi-trap-desc">Short covering rally likely at 48,700!</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <!-- FII/DII Net Flows -->
       <div class="widget-card">
         <div class="widget-header">
@@ -2633,9 +2667,11 @@ let activeSector = null;
 
 // Simulated Widget States (ticking in real-time)
 let pcrVal = 1.24;
+let bankPcrVal = 1.15;
 let fiiNetVal = -1240;
 let diiNetVal = 2180;
 let niftyClosePrice = 23450;
+let bankNiftyClosePrice = 48500;
 
 // Sector Data — loaded from real NSE sector indices via backend
 const SECTOR_NAMES = ["Banking","IT","Pharma","Auto","FMCG","Metals","Energy","Realty","Infra","Media"];
@@ -2793,6 +2829,7 @@ function loadRegime() {
       nifty.textContent = '₹' + (d.nifty_close || 0).toLocaleString('en-IN', {maximumFractionDigits:2});
       nifty.style.color = d.color;
       niftyClosePrice = d.nifty_close || 23450;
+      bankNiftyClosePrice = d.banknifty_close || 48500;
       updateSidebarWidgets();
 
       const b = d.breadth || 50;
@@ -3516,6 +3553,7 @@ function runLiveTicker() {
 
   // Dynamic PCR drift
   pcrVal = parseFloat(Math.min(1.6, Math.max(0.6, pcrVal + (Math.random() * 0.04 - 0.02))).toFixed(2));
+  bankPcrVal = parseFloat(Math.min(1.6, Math.max(0.6, bankPcrVal + (Math.random() * 0.04 - 0.02))).toFixed(2));
   fiiNetVal += Math.round(Math.random() * 40 - 20);
   diiNetVal += Math.round(Math.random() * 40 - 18);
 
@@ -3532,6 +3570,13 @@ function updateSidebarWidgets() {
   if (pcrEl) {
     pcrEl.textContent = pcrVal.toFixed(2);
     pcrEl.className = pcrVal >= 1.2 ? 'up' : pcrVal <= 0.8 ? 'dn' : 'neutral';
+  }
+
+  // 1c. Bank Nifty PCR Widget
+  const bnPcrEl = document.getElementById('bn-oi-pcr');
+  if (bnPcrEl) {
+    bnPcrEl.textContent = bankPcrVal.toFixed(2);
+    bnPcrEl.className = bankPcrVal >= 1.2 ? 'up' : bankPcrVal <= 0.8 ? 'dn' : 'neutral';
   }
   
   // 1b. Dynamic Options Chain strikes aligned with current Nifty close
@@ -3562,6 +3607,37 @@ function updateSidebarWidgets() {
   if (trapBox) {
     trapBox.style.display = pcrVal > 1.25 ? 'flex' : 'none';
   }
+
+  // 1d. Dynamic Bank Nifty Option strikes
+  const bankBaseStrike = Math.round(bankNiftyClosePrice / 100) * 100;
+  const bankMaxPain = bankBaseStrike;
+  const bankResistance = bankBaseStrike + 200;
+  const bankSupport = bankBaseStrike - 400;
+
+  const bnMpEl = document.getElementById('bn-oi-maxpain');
+  if (bnMpEl) bnMpEl.textContent = bankMaxPain.toLocaleString('en-IN');
+
+  const bnResEl = document.getElementById('bn-oi-resistance');
+  if (bnResEl) bnResEl.textContent = bankResistance.toLocaleString('en-IN');
+
+  const bnSupEl = document.getElementById('bn-oi-support');
+  if (bnSupEl) bnSupEl.textContent = bankSupport.toLocaleString('en-IN');
+
+  const bnTrapTitle = document.getElementById('bn-oi-trap-title');
+  if (bnTrapTitle) {
+    bnTrapTitle.textContent = `${bankPcrVal > 1.25 ? 'CE' : 'PE'} WRITERS TRAPPED`;
+  }
+  const bnTrapDesc = document.getElementById('bn-oi-trap-desc');
+  if (bnTrapDesc) {
+    bnTrapDesc.textContent = `Short covering rally likely at ${bankResistance.toLocaleString('en-IN')}!`;
+  }
+
+  const bnTrapBox = document.getElementById('bn-oi-trap-box');
+  if (bnTrapBox) {
+    bnTrapBox.style.display = bankPcrVal > 1.25 ? 'flex' : 'none';
+  }
+  
+
 
   // 2. FII/DII Net Flow
   const total = Math.abs(fiiNetVal) + Math.abs(diiNetVal);

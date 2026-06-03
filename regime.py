@@ -495,6 +495,7 @@ def get_regime(force_refresh: bool = False) -> Dict:
         "reasons":      [],
         "breakdown":    {},
         "nifty_close":  0.0,
+        "banknifty_close": 0.0,
         "nifty_ema20":  0.0,
         "nifty_ema50":  0.0,
         "nifty_ema200": 0.0,
@@ -510,6 +511,25 @@ def get_regime(force_refresh: bool = False) -> Dict:
     }
 
     try:
+        # Fetch live Bank Nifty price
+        banknifty_close = 0.0
+        try:
+            bn_ticker = yf.Ticker("^NSEBANK")
+            bn_fast = bn_ticker.fast_info
+            banknifty_close = bn_fast.get('lastPrice') or bn_fast.get('last_price')
+            if banknifty_close is None:
+                # fallback to download
+                bn_df = yf.download("^NSEBANK", period="5d", progress=False)
+                if bn_df is not None and not bn_df.empty:
+                    if isinstance(bn_df.columns, pd.MultiIndex):
+                        bn_df.columns = [c[0].lower() for c in bn_df.columns]
+                    else:
+                        bn_df.columns = [c.lower() for c in bn_df.columns]
+                    banknifty_close = float(bn_df["close"].iloc[-1])
+            banknifty_close = round(float(banknifty_close), 2) if banknifty_close else 0.0
+        except Exception as e:
+            log.warning(f"Failed to fetch Bank Nifty price: {e}")
+
         df = _fetch_nifty("1y")
         if df is None or len(df) < 210:
             result["error"] = "Insufficient NIFTY data"
@@ -591,6 +611,7 @@ def get_regime(force_refresh: bool = False) -> Dict:
             "reasons":      score_res["reasons"],
             "breakdown":    score_res["breakdown"],
             "nifty_close":  round(close, 2),
+            "banknifty_close": banknifty_close,
             "nifty_ema20":  round(ema20, 2),
             "nifty_ema50":  round(ema50, 2),
             "nifty_ema200": round(ema200, 2),

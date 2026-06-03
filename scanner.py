@@ -62,7 +62,7 @@ CFG: Dict = {
     # 52-week lookback window (trading days)
     "HV_DAYS":        int(os.getenv("HV_DAYS",        "252")),
     # Concurrency
-    "MAX_WORKERS":    int(os.getenv("MAX_WORKERS",    "6")),
+    "MAX_WORKERS":    int(os.getenv("MAX_WORKERS",    "25")),
     # Telegram
     "TG_TOKEN":       os.getenv("TG_TOKEN",       ""),
     "TG_CHAT_ID":     os.getenv("TG_CHAT_ID",     ""),
@@ -575,15 +575,14 @@ def _download(ticker: str, retries: int = 3, use_cache_only: bool = False) -> Op
 
     for attempt in range(retries):
         try:
-            with _YF_LOCK:
-                df = yf.download(
-                    ticker,
-                    period="5y",
-                    interval="1d",
-                    progress=False,
-                    auto_adjust=True,
-                    timeout=30,
-                )
+            df = yf.download(
+                ticker,
+                period="5y",
+                interval="1d",
+                progress=False,
+                auto_adjust=True,
+                timeout=30,
+            )
             if df is not None and not df.empty:
                 df = normalize_dataframe(df)
                 # Save to cache
@@ -695,8 +694,25 @@ def analyse(
             prev_close_fi = fast.get('regularMarketPreviousClose') or fast.get('previousClose') or fast.get('previous_close')
             year_high     = fast.get('yearHigh') or fast.get('year_high')
             year_low      = fast.get('yearLow') or fast.get('year_low')
+            
+            day_high      = fast.get('dayHigh') or fast.get('day_high')
+            day_low       = fast.get('dayLow') or fast.get('day_low')
+            
             if live_price is not None:
                 df.at[df.index[-1], "close"] = float(live_price)
+                
+                # Update high/low/open to prevent structural violations (high < close, low > close etc)
+                current_high = df.at[df.index[-1], "high"]
+                current_low  = df.at[df.index[-1], "low"]
+                
+                val_high = float(day_high) if day_high is not None else float(live_price)
+                val_low  = float(day_low) if day_low is not None else float(live_price)
+                
+                df.at[df.index[-1], "high"] = max(float(current_high), val_high, float(live_price))
+                df.at[df.index[-1], "low"]  = min(float(current_low), val_low, float(live_price))
+                
+                current_open = df.at[df.index[-1], "open"]
+                df.at[df.index[-1], "open"] = max(df.at[df.index[-1], "low"], min(df.at[df.index[-1], "high"], float(current_open)))
         except Exception as e:
             log.warning(f"Error fetching fast_info for {ticker}: {e}")
 
@@ -704,11 +720,10 @@ def analyse(
         # This handles Yahoo Finance rate-limiting of fast_info during market hours.
         if live_price is None:
             try:
-                with _YF_LOCK:
-                    _df5 = yf.download(
-                        ticker, period="5d", interval="1d",
-                        progress=False, auto_adjust=True, timeout=15
-                    )
+                _df5 = yf.download(
+                    ticker, period="5d", interval="1d",
+                    progress=False, auto_adjust=True, timeout=15
+                )
                 if _df5 is not None and not _df5.empty:
                     if isinstance(_df5.columns[0], tuple):
                         _df5.columns = [c[0].lower() for c in _df5.columns]
