@@ -143,15 +143,20 @@ def init_db() -> None:
             )
         """)
         
-        # 2. alert_history table
+        # 2. alert_history table (v5.0 upgrade)
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS alert_history (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                symbol TEXT,
-                signal_type TEXT,
-                entry_price REAL,
-                channel TEXT,
-                timestamp REAL
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                symbol      TEXT NOT NULL,
+                score       REAL,
+                entry       REAL,
+                sl          REAL,
+                target      REAL,
+                rr          REAL,
+                rvol        REAL,
+                regime      TEXT,
+                alert_time  TEXT DEFAULT (datetime('now','localtime')),
+                channel     TEXT DEFAULT 'telegram'
             )
         """)
         
@@ -1512,8 +1517,14 @@ def filter_cooldown_signals(signals: List[Dict], channel: str, cooldown_hours: f
             conn = sqlite3.connect(DB_FILE)
             cursor = conn.cursor()
             cursor.execute(
-                "INSERT INTO alert_history (symbol, signal_type, entry_price, channel, timestamp) VALUES (?, ?, ?, ?, ?)",
-                (symbol, sig_type, entry_price, channel, now)
+                """
+                INSERT INTO alert_history 
+                (symbol, score, entry, sl, target, rr, rvol, regime, alert_time, channel) 
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now','localtime'), ?)
+                """,
+                (symbol, s.get("score", 70.0), entry_price, s.get("stop_loss", entry_price * 0.985),
+                 s.get("target", entry_price * 1.03), s.get("rr", 2.0), s.get("rvol", 2.0),
+                 s.get("regime", "NEUTRAL"), channel)
             )
             conn.commit()
             conn.close()
