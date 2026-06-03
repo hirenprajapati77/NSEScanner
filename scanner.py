@@ -691,10 +691,10 @@ def analyse(
 
         try:
             fast = ticker_obj.fast_info
-            live_price    = fast.get('last_price')
-            prev_close_fi = fast.get('previous_close')   # ← KEY FIX
-            year_high     = fast.get('year_high')
-            year_low      = fast.get('year_low')
+            live_price    = fast.get('lastPrice') or fast.get('last_price')
+            prev_close_fi = fast.get('regularMarketPreviousClose') or fast.get('previousClose') or fast.get('previous_close')
+            year_high     = fast.get('yearHigh') or fast.get('year_high')
+            year_low      = fast.get('yearLow') or fast.get('year_low')
             if live_price is not None:
                 df.at[df.index[-1], "close"] = float(live_price)
         except Exception as e:

@@ -30,10 +30,10 @@ def fetch_single_stock(symbol):
         
         # Use fast_info for current price (no cache)
         fast = ticker.fast_info
-        ltp = fast.get('last_price', 0)
-        prev_close = fast.get('previous_close', 0)
-        year_high = fast.get('year_high', 0)
-        year_low = fast.get('year_low', 0)
+        ltp = fast.get('lastPrice') or fast.get('last_price', 0)
+        prev_close = fast.get('regularMarketPreviousClose') or fast.get('previousClose') or fast.get('previous_close', 0)
+        year_high = fast.get('yearHigh') or fast.get('year_high', 0)
+        year_low = fast.get('yearLow') or fast.get('year_low', 0)
         
         if not ltp or ltp == 0:
             return None

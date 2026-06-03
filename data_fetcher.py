@@ -19,7 +19,7 @@ def get_stock_price(symbol):
     # PRIMARY: Yahoo Finance fast_info
     try:
         ticker = yf.Ticker(clean_symbol + ".NS")
-        price = ticker.fast_info['last_price']
+        price = ticker.fast_info.get('lastPrice') or ticker.fast_info.get('last_price')
         if price and price > 0:
             _price_cache[clean_symbol] = {'price': price, 'time': time.time(), 'source': 'yahoo'}
             return price, 'yahoo'

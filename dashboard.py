@@ -918,8 +918,9 @@ def ltp_live():
         sym = t["symbol"].strip().upper()
         try:
             ticker_obj = yf.Ticker(sym + ".NS")
-            ltp = ticker_obj.fast_info.get("last_price") or \
-                  ticker_obj.fast_info.get("previous_close") or None
+            ltp = ticker_obj.fast_info.get("lastPrice") or \
+                  ticker_obj.fast_info.get("regularMarketPreviousClose") or \
+                  ticker_obj.fast_info.get("previousClose") or None
             if ltp and float(ltp) > 0:
                 result[sym] = round(float(ltp), 2)
         except Exception:

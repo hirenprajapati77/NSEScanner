@@ -221,8 +221,8 @@ def _get_sector_data_for_regime() -> Dict[str, float]:
         try:
             t = yf.Ticker(ticker)
             fi = t.fast_info
-            prev = fi.get("previous_close") or 0
-            last = fi.get("last_price") or 0
+            prev = fi.get("regularMarketPreviousClose") or fi.get("previousClose") or fi.get("previous_close") or 0
+            last = fi.get("lastPrice") or fi.get("last_price") or 0
             if prev > 0 and last > 0:
                 result[name] = round((last - prev) / prev * 100, 2)
             else:
