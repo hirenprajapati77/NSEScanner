@@ -1295,16 +1295,10 @@ def run_scan(
     except Exception as e:
         log.warning(f"Could not clear requests_cache: {e}")
 
-    # Delete yfinance timezone cache directory to bust cache
+    # Ensure yfinance timezone cache directory exists and do not delete it to prevent concurrent SQLite write lock failures
     yf_cache_temp = os.path.join("data_cache", "yf_cache_temp")
-    if os.path.exists(yf_cache_temp):
-        try:
-            import shutil
-            shutil.rmtree(yf_cache_temp)
-            log.info("🧹 Temporary timezone cache folder deleted.")
-        except Exception as e:
-            log.warning(f"Could not delete temporary timezone cache: {e}")
     try:
+        os.makedirs(yf_cache_temp, exist_ok=True)
         yf.set_tz_cache_location(yf_cache_temp)
     except Exception as e:
         log.warning(f"Could not set timezone cache location: {e}")
