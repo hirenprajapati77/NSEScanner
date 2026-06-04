@@ -2345,69 +2345,72 @@ tbody tr:hover td:first-child {
         <div id="sectorFetchTime" style="font-size:9px;color:var(--text-muted);text-align:right;margin-top:4px;padding:0 2px;display:none"></div>
       </div>
 
-      <!-- Option Chain PCR widget -->
-      <div class="widget-card">
-        <div class="widget-header">
-          <div class="w-2.5 h-2.5 rounded-full bg-blue-500 animate-pulse"></div>
-          <span>OI Pulse (Nifty Index)</span>
-        </div>
-        <div style="display:flex;flex-direction:column;gap:8px">
-          <div style="display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid #111827;padding-bottom:6px">
-            <span style="font-size:11px;color:var(--text-muted)">Put-Call Ratio (PCR)</span>
-            <span id="oi-pcr" style="font-weight:800;font-family:var(--font-mono);padding:2px 8px;border-radius:4px" class="up">1.24</span>
+      <!-- OI Pulse Widgets Row -->
+      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; width: 100%;">
+        <!-- Option Chain PCR widget -->
+        <div class="widget-card" style="padding: 10px 8px;">
+          <div class="widget-header" style="margin-bottom: 8px;">
+            <div class="w-2 h-2 rounded-full bg-blue-500 animate-pulse"></div>
+            <span style="font-size: 9px; white-space: nowrap;">Nifty OI Pulse</span>
           </div>
-          <div style="display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid #111827;padding-bottom:6px">
-            <span style="font-size:11px;color:var(--text-muted)">Max Pain strike</span>
-            <span id="oi-maxpain" style="font-weight:700;font-family:var(--font-mono);color:var(--text-primary)">22,400</span>
-          </div>
-          <div style="display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid #111827;padding-bottom:6px">
-            <span style="font-size:11px;color:var(--text-muted)">Call Build (Resistance)</span>
-            <span id="oi-resistance" style="font-weight:700;font-family:var(--font-mono);color:var(--pro-sell)">22,500</span>
-          </div>
-          <div style="display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid #111827;padding-bottom:6px">
-            <span style="font-size:11px;color:var(--text-muted)">Put Build (Support)</span>
-            <span id="oi-support" style="font-weight:700;font-family:var(--font-mono);color:var(--pro-buy)">22,200</span>
-          </div>
-          
-          <div class="mt-2 bg-amber-950/40 border border-amber-900/60 rounded-lg p-2 flex items-start gap-1.5" id="oi-trap-box">
-            <i class="ti ti-shield-alert" style="color:var(--pro-watch);font-size:14px;margin-top:2px"></i>
-            <div>
-              <div style="font-size:10px;font-weight:800;color:#fbbf24" id="oi-trap-title">CE WRITERS TRAPPED</div>
-              <div style="font-size:9px;color:#f59e0b;line-height:1.2;margin-top:2px" id="oi-trap-desc">Short covering rally likely at 22,500!</div>
+          <div style="display:flex;flex-direction:column;gap:6px">
+            <div style="display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid #111827;padding-bottom:4px">
+              <span style="font-size:9.5px;color:var(--text-muted);white-space:nowrap">PCR</span>
+              <span id="oi-pcr" style="font-weight:800;font-family:var(--font-mono);padding:2px 4px;border-radius:4px;font-size:10px" class="up">1.24</span>
+            </div>
+            <div style="display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid #111827;padding-bottom:4px">
+              <span style="font-size:9.5px;color:var(--text-muted);white-space:nowrap">Max Pain</span>
+              <span id="oi-maxpain" style="font-weight:700;font-family:var(--font-mono);color:var(--text-primary);font-size:10px">22,400</span>
+            </div>
+            <div style="display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid #111827;padding-bottom:4px">
+              <span style="font-size:9.5px;color:var(--text-muted);white-space:nowrap">Resist (CE)</span>
+              <span id="oi-resistance" style="font-weight:700;font-family:var(--font-mono);color:var(--pro-sell);font-size:10px">22,500</span>
+            </div>
+            <div style="display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid #111827;padding-bottom:4px">
+              <span style="font-size:9.5px;color:var(--text-muted);white-space:nowrap">Support (PE)</span>
+              <span id="oi-support" style="font-weight:700;font-family:var(--font-mono);color:var(--pro-buy);font-size:10px">22,200</span>
+            </div>
+            
+            <div class="mt-1.5 bg-amber-950/40 border border-amber-900/60 rounded-lg p-1.5 flex items-start gap-1" id="oi-trap-box">
+              <i class="ti ti-shield-alert" style="color:var(--pro-watch);font-size:12px;margin-top:2px"></i>
+              <div>
+                <div style="font-size:9px;font-weight:800;color:#fbbf24" id="oi-trap-title">CE WRITERS TRAPPED</div>
+                <div style="font-size:8px;color:#f59e0b;line-height:1.2;margin-top:1px" id="oi-trap-desc">Short covering rally likely at 22,500!</div>
+              </div>
             </div>
           </div>
         </div>
-      </div>
 
-      <!-- Option Chain PCR widget (Bank Nifty) -->
-      <div class="widget-card">
-        <div class="widget-header">
-          <div class="w-2.5 h-2.5 rounded-full bg-cyan-500 animate-pulse"></div>
-          <span>OI Pulse (Bank Nifty)</span>
-        </div>
-        <div style="display:flex;flex-direction:column;gap:8px">
-          <div style="display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid #111827;padding-bottom:6px">
-            <span style="font-size:11px;color:var(--text-muted)">Put-Call Ratio (PCR)</span>
-            <span id="bn-oi-pcr" style="font-weight:800;font-family:var(--font-mono);padding:2px 8px;border-radius:4px" class="neutral">1.15</span>
+        <!-- Option Chain PCR widget (Bank Nifty) -->
+        <div class="widget-card" style="padding: 10px 8px;">
+          <div class="widget-header" style="margin-bottom: 8px;">
+            <div class="w-2 h-2 rounded-full bg-cyan-500 animate-pulse"></div>
+            <span style="font-size: 9px; white-space: nowrap;">BN OI Pulse</span>
           </div>
-          <div style="display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid #111827;padding-bottom:6px">
-            <span style="font-size:11px;color:var(--text-muted)">Max Pain strike</span>
-            <span id="bn-oi-maxpain" style="font-weight:700;font-family:var(--font-mono);color:var(--text-primary)">48,500</span>
-          </div>
-          <div style="display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid #111827;padding-bottom:6px">
-            <span style="font-size:11px;color:var(--text-muted)">Call Build (Resistance)</span>
-            <span id="bn-oi-resistance" style="font-weight:700;font-family:var(--font-mono);color:var(--pro-sell)">48,700</span>
-          </div>
-          <div style="display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid #111827;padding-bottom:6px">
-            <span style="font-size:11px;color:var(--text-muted)">Put Build (Support)</span>
-            <span id="bn-oi-support" style="font-weight:700;font-family:var(--font-mono);color:var(--pro-buy)">48,100</span>
-          </div>
-          
-          <div class="mt-2 bg-amber-950/40 border border-amber-900/60 rounded-lg p-2 flex items-start gap-1.5" id="bn-oi-trap-box" style="display:none">
-            <i class="ti ti-shield-alert" style="color:var(--pro-watch);font-size:14px;margin-top:2px"></i>
-            <div>
-              <div style="font-size:10px;font-weight:800;color:#fbbf24" id="bn-oi-trap-title">CE WRITERS TRAPPED</div>
-              <div style="font-size:9px;color:#f59e0b;line-height:1.2;margin-top:2px" id="bn-oi-trap-desc">Short covering rally likely at 48,700!</div>
+          <div style="display:flex;flex-direction:column;gap:6px">
+            <div style="display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid #111827;padding-bottom:4px">
+              <span style="font-size:9.5px;color:var(--text-muted);white-space:nowrap">PCR</span>
+              <span id="bn-oi-pcr" style="font-weight:800;font-family:var(--font-mono);padding:2px 4px;border-radius:4px;font-size:10px" class="neutral">1.15</span>
+            </div>
+            <div style="display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid #111827;padding-bottom:4px">
+              <span style="font-size:9.5px;color:var(--text-muted);white-space:nowrap">Max Pain</span>
+              <span id="bn-oi-maxpain" style="font-weight:700;font-family:var(--font-mono);color:var(--text-primary);font-size:10px">48,500</span>
+            </div>
+            <div style="display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid #111827;padding-bottom:4px">
+              <span style="font-size:9.5px;color:var(--text-muted);white-space:nowrap">Resist (CE)</span>
+              <span id="bn-oi-resistance" style="font-weight:700;font-family:var(--font-mono);color:var(--pro-sell);font-size:10px">48,700</span>
+            </div>
+            <div style="display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid #111827;padding-bottom:4px">
+              <span style="font-size:9.5px;color:var(--text-muted);white-space:nowrap">Support (PE)</span>
+              <span id="bn-oi-support" style="font-weight:700;font-family:var(--font-mono);color:var(--pro-buy);font-size:10px">48,100</span>
+            </div>
+            
+            <div class="mt-1.5 bg-amber-950/40 border border-amber-900/60 rounded-lg p-1.5 flex items-start gap-1" id="bn-oi-trap-box" style="display:none">
+              <i class="ti ti-shield-alert" style="color:var(--pro-watch);font-size:12px;margin-top:2px"></i>
+              <div>
+                <div style="font-size:9px;font-weight:800;color:#fbbf24" id="bn-oi-trap-title">CE WRITERS TRAPPED</div>
+                <div style="font-size:8px;color:#f59e0b;line-height:1.2;margin-top:1px" id="bn-oi-trap-desc">Short covering rally likely at 48,700!</div>
+              </div>
             </div>
           </div>
         </div>
