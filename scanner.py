@@ -79,6 +79,17 @@ CFG: Dict = {
     # default MIN_PRICE set to 50.0 INR and MAX_52W_AGE set to 180 days
     "MIN_PRICE":      float(os.getenv("MIN_PRICE",      "50.0")),
     "MAX_52W_AGE":    int(os.getenv("MAX_52W_AGE",    "180")),
+    "STOCK_TIMEOUT":  int(os.getenv("STOCK_TIMEOUT",  "8")),
+    "SCAN_DEADLINE":  int(os.getenv("SCAN_DEADLINE",  "120")),
+}
+
+SKIP_TICKERS = {
+    "VMART.NS",        # V-Mart acquired by Reliance — delisted
+    "TATAMOTORS.NS",   # Demerged into TMCV + TMPV
+    "MINDTREE.NS",     # Merged into LTIMindtree (LTIM.NS)
+    "PVR.NS",          # Merged with INOX — now PVRINOX.NS
+    "DELTACORP.NS",    # Suspended
+    "TEJASNET.NS",     # Often illiquid/suspended
 }
 
 
@@ -627,6 +638,41 @@ def _get_cache_hit(ticker: str) -> int:
     return 0
 
 
+def fetch_with_timeout(
+    ticker: str,
+    bearish: bool = False,
+    cfg_override: Optional[Dict] = None,
+    explain_skip: bool = False,
+    timeout: int = 8,
+) -> Optional[Dict]:
+    """
+    Wraps analyse() with a hard per-stock timeout.
+    If yfinance hangs, this returns None after timeout seconds.
+    """
+    with ThreadPoolExecutor(max_workers=1) as ex:
+        future = ex.submit(analyse, ticker, bearish=bearish, cfg_override=cfg_override, explain_skip=explain_skip)
+        try:
+            return future.result(timeout=timeout)
+        except concurrent.futures.TimeoutError:
+            log.warning(f"⏱️ TIMEOUT: {ticker} skipped after {timeout}s")
+            if explain_skip:
+                return {
+                    "symbol": ticker.replace(".NS", ""),
+                    "skipped": True,
+                    "reason": f"Analysis timed out after {timeout} seconds"
+                }
+            return None
+        except Exception as e:
+            log.warning(f"Error during analysis of {ticker}: {e}")
+            if explain_skip:
+                return {
+                    "symbol": ticker.replace(".NS", ""),
+                    "skipped": True,
+                    "reason": f"Analysis failed: {str(e)}"
+                }
+            return None
+
+
 def analyse(
     ticker: str,
     bearish: bool = False,
@@ -639,6 +685,15 @@ def analyse(
     otherwise None if it does not qualify.
     cfg_override allows per-scan settings without mutating the global CFG.
     """
+    if ticker in SKIP_TICKERS:
+        if explain_skip:
+            return {
+                "symbol": ticker.replace(".NS", ""),
+                "skipped": True,
+                "reason": "Ticker is in the dead/delisted skip list"
+            }
+        return None
+
     cfg      = {**CFG, **(cfg_override or {})}
     vol_days = cfg["VOL_DAYS"]
     hv_days  = cfg["HV_DAYS"]
@@ -1295,12 +1350,19 @@ def run_scan(
     progress_cb(current, total, ticker, eta_seconds) is called after each ticker.
     stop_event: set it to cancel an in-progress scan gracefully.
     """
-    tickers = list(tickers or NIFTY500_SAMPLE)
+    raw_tickers = list(tickers or NIFTY500_SAMPLE)
+    tickers = [t for t in raw_tickers if t not in SKIP_TICKERS]
+    skipped_count = len(raw_tickers) - len(tickers)
+    if skipped_count > 0:
+        log.info(f"⏭️ Skipped {skipped_count} known bad/delisted tickers before scanning.")
+
     total   = len(tickers)
     results: List[Dict] = []
     counter  = {"n": 0, "start": time.time(), "cache_hits": 0}
     lock     = threading.Lock()
     workers  = (cfg_override or {}).get("MAX_WORKERS", CFG["MAX_WORKERS"])
+    stock_timeout = (cfg_override or {}).get("STOCK_TIMEOUT", CFG["STOCK_TIMEOUT"])
+    scan_deadline = (cfg_override or {}).get("SCAN_DEADLINE", CFG["SCAN_DEADLINE"])
 
     # Clear requests_cache before every scan to prevent stale data
     try:
@@ -1324,9 +1386,12 @@ def run_scan(
     def _task(ticker: str) -> Optional[Dict]:
         if stop_event and stop_event.is_set():
             return None
+        if time.time() - counter["start"] > scan_deadline:
+            log.warning(f"⏱️ Scan deadline exceeded: skipping {ticker}")
+            return None
         
         is_hit = _get_cache_hit(ticker)
-        result = analyse(ticker, bearish=bearish, cfg_override=cfg_override)
+        result = fetch_with_timeout(ticker, bearish=bearish, cfg_override=cfg_override, timeout=stock_timeout)
         if result:
             result["raw_score"] = result["score"]  # keep original raw score
             result["regime_score"] = adjust_score_for_regime(
@@ -1367,10 +1432,23 @@ def run_scan(
 
     with ThreadPoolExecutor(max_workers=workers) as pool:
         futures = {pool.submit(_task, t): t for t in tickers}
-        for fut in as_completed(futures):
-            r = fut.result()
-            if r:
-                results.append(r)
+        try:
+            for fut in as_completed(futures, timeout=scan_deadline + 10):
+                try:
+                    r = fut.result()
+                    if r:
+                        results.append(r)
+                except Exception:
+                    pass
+        except concurrent.futures.TimeoutError:
+            log.warning("⏱️ ThreadPoolExecutor scan hit outer timeout limit!")
+
+    # Force progress to 100% if deadline or timeout cut the scan short
+    if progress_cb and counter["n"] < total:
+        try:
+            progress_cb(total, total, "Complete (deadline reached)", 0)
+        except Exception:
+            pass
 
     results.sort(key=lambda x: x["score"], reverse=True)
     
