@@ -969,16 +969,21 @@ def analyse(
         pivot = round((hv_high + hv_low + close) / 3, 2)
         entry = pivot  # Pivot is the institutional entry standard
 
+        # Yesterday's daily range
+        y_high = float(df.iloc[-2]["high"])
+        y_low = float(df.iloc[-2]["low"])
+        y_rng = y_high - y_low
+
         cam = {
             "pivot": pivot,
-            "H1":    round(close + range_52w * 1.1 / 12, 2),
-            "H2":    round(close + range_52w * 1.1 / 6,  2),
-            "H3":    round(close + range_52w * 1.1 / 4,  2),  # Target1 for Bull
-            "H4":    round(close + range_52w * 1.1 / 2,  2),  # Target2 for Bull
-            "L1":    round(close - range_52w * 1.1 / 12, 2),
-            "L2":    round(close - range_52w * 1.1 / 6,  2),
-            "L3":    round(close - range_52w * 1.1 / 4,  2),  # StopLoss for Bull
-            "L4":    round(close - range_52w * 1.1 / 2,  2),
+            "H1":    round(prev_close + y_rng * 1.1 / 12, 2),
+            "H2":    round(prev_close + y_rng * 1.1 / 6,  2),
+            "H3":    round(prev_close + y_rng * 1.1 / 4,  2),  # Target1 for Bull
+            "H4":    round(prev_close + y_rng * 1.1 / 2,  2),  # Target2 for Bull
+            "L1":    round(prev_close - y_rng * 1.1 / 12, 2),
+            "L2":    round(prev_close - y_rng * 1.1 / 6,  2),
+            "L3":    round(prev_close - y_rng * 1.1 / 4,  2),  # StopLoss for Bull
+            "L4":    round(prev_close - y_rng * 1.1 / 2,  2),
         }
 
         # ── Advanced Quant Indicators ─────────────────────────
@@ -1283,6 +1288,15 @@ def analyse(
             result["signal_strength"] = "Moderate Setup"
         else:
             result["signal_strength"] = "Weak Signal"
+
+        # Map missing keys for scanner_momentum compatibility
+        result["close"] = result["price"]
+        result["camarilla_h4"] = result["cam"]["H4"]
+        result["camarilla_l3"] = result["cam"]["L3"]
+        result["camarilla_l4"] = result["cam"]["L4"]
+        result["camarilla_h5"] = result["t1"]
+        result["camarilla_h6"] = result["t2"]
+        result["rvol"] = result["vol_ratio"]
 
         # Check strict buy/sell conditions
         if not bearish:
