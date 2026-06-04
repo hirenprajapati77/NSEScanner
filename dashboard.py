@@ -811,6 +811,7 @@ def update_watchlist():
 
 @app.route("/watchlist/status", methods=["GET"])
 def get_watchlist_status_route():
+    import sqlite3
     from watchlist import get_watchlist_status
     from data_fetcher import get_stock_price
     import journal
@@ -2730,7 +2731,8 @@ function fetchSectorRotation() {
 }
 let activeSectors_fetchTimer = null;
 
-const sectorMapping = {
+// sectorMapping: seeded with known stocks, gets enriched dynamically from live scan results
+let sectorMapping = {
   // Original mock stocks
   "HDFCBANK": "Banking", "SBIN": "Banking",
   "RELIANCE": "Energy", "COALINDIA": "Metals",
@@ -2738,7 +2740,7 @@ const sectorMapping = {
   "INFY": "IT", "WIPRO": "IT",
   "DRREDDY": "Pharma", "DLF": "Realty",
   "ADANIENT": "Infra", "ITC": "FMCG",
-  
+
   // Real database scanned stocks
   "CHENNPETRO": "Energy", "ATGL": "Energy",
   "CUB": "Banking", "FEDERALBNK": "Banking", "RBLBANK": "Banking", "BANDHANBNK": "Banking",
@@ -2750,6 +2752,21 @@ const sectorMapping = {
   "PIDILITIND": "FMCG", "TATACHEM": "FMCG",
   "SOLARINDS": "Infra", "SIEMENS": "Infra", "LT": "Infra", "INDUSTOWER": "Infra"
 };
+
+// Enriches sectorMapping from live scan results (s.sector field from scanner.py)
+function enrichSectorMapping(signals) {
+  (signals || []).forEach(s => {
+    if (s.symbol && s.sector && s.sector !== 'General Equity') {
+      sectorMapping[s.symbol.toUpperCase()] = s.sector;
+    }
+  });
+}
+
+// Helper: get sector for a stock — prefers live scanner sector, falls back to map
+function getStockSector(s) {
+  if (s.sector && s.sector !== 'General Equity') return s.sector;
+  return sectorMapping[s.symbol] || sectorMapping[(s.symbol || '').toUpperCase()] || 'General Equity';
+}
 
 // Helpers
 const fmt = n => n >= 1000 ? '₹'+n.toLocaleString('en-IN',{maximumFractionDigits:2}) : '₹'+n.toFixed(2);
@@ -3598,17 +3615,40 @@ function updateSidebarWidgets() {
   if (supEl) supEl.textContent = supportVal.toLocaleString('en-IN');
 
   const trapTitle = document.getElementById('oi-trap-title');
-  if (trapTitle) {
-    trapTitle.textContent = `${pcrVal > 1.25 ? 'CE' : 'PE'} WRITERS TRAPPED`;
-  }
   const trapDesc = document.getElementById('oi-trap-desc');
-  if (trapDesc) {
-    trapDesc.textContent = `Short covering rally likely at ${resistanceVal.toLocaleString('en-IN')}!`;
-  }
-
   const trapBox = document.getElementById('oi-trap-box');
   if (trapBox) {
-    trapBox.style.display = pcrVal > 1.25 ? 'flex' : 'none';
+    if (pcrVal > 1.25) {
+      if (trapTitle) {
+        trapTitle.textContent = "CE WRITERS TRAPPED";
+        trapTitle.style.color = "#34d399";
+      }
+      if (trapDesc) {
+        trapDesc.textContent = `Short covering rally likely at ${resistanceVal.toLocaleString('en-IN')}!`;
+        trapDesc.style.color = "#10b981";
+      }
+      const icon = trapBox.querySelector('i');
+      if (icon) icon.style.color = "#34d399";
+      trapBox.style.backgroundColor = "rgba(6, 78, 59, 0.4)";
+      trapBox.style.borderColor = "rgba(16, 185, 129, 0.6)";
+      trapBox.style.display = 'flex';
+    } else if (pcrVal < 0.75) {
+      if (trapTitle) {
+        trapTitle.textContent = "PE WRITERS TRAPPED";
+        trapTitle.style.color = "#f87171";
+      }
+      if (trapDesc) {
+        trapDesc.textContent = `Panic sell-off / Breakdown likely at ${supportVal.toLocaleString('en-IN')}!`;
+        trapDesc.style.color = "#ef4444";
+      }
+      const icon = trapBox.querySelector('i');
+      if (icon) icon.style.color = "#f87171";
+      trapBox.style.backgroundColor = "rgba(127, 29, 29, 0.4)";
+      trapBox.style.borderColor = "rgba(239, 68, 68, 0.6)";
+      trapBox.style.display = 'flex';
+    } else {
+      trapBox.style.display = 'none';
+    }
   }
 
   // 1d. Dynamic Bank Nifty Option strikes
@@ -3627,17 +3667,40 @@ function updateSidebarWidgets() {
   if (bnSupEl) bnSupEl.textContent = bankSupport.toLocaleString('en-IN');
 
   const bnTrapTitle = document.getElementById('bn-oi-trap-title');
-  if (bnTrapTitle) {
-    bnTrapTitle.textContent = `${bankPcrVal > 1.25 ? 'CE' : 'PE'} WRITERS TRAPPED`;
-  }
   const bnTrapDesc = document.getElementById('bn-oi-trap-desc');
-  if (bnTrapDesc) {
-    bnTrapDesc.textContent = `Short covering rally likely at ${bankResistance.toLocaleString('en-IN')}!`;
-  }
-
   const bnTrapBox = document.getElementById('bn-oi-trap-box');
   if (bnTrapBox) {
-    bnTrapBox.style.display = bankPcrVal > 1.25 ? 'flex' : 'none';
+    if (bankPcrVal > 1.25) {
+      if (bnTrapTitle) {
+        bnTrapTitle.textContent = "CE WRITERS TRAPPED";
+        bnTrapTitle.style.color = "#34d399";
+      }
+      if (bnTrapDesc) {
+        bnTrapDesc.textContent = `Short covering rally likely at ${bankResistance.toLocaleString('en-IN')}!`;
+        bnTrapDesc.style.color = "#10b981";
+      }
+      const icon = bnTrapBox.querySelector('i');
+      if (icon) icon.style.color = "#34d399";
+      bnTrapBox.style.backgroundColor = "rgba(6, 78, 59, 0.4)";
+      bnTrapBox.style.borderColor = "rgba(16, 185, 129, 0.6)";
+      bnTrapBox.style.display = 'flex';
+    } else if (bankPcrVal < 0.75) {
+      if (bnTrapTitle) {
+        bnTrapTitle.textContent = "PE WRITERS TRAPPED";
+        bnTrapTitle.style.color = "#f87171";
+      }
+      if (bnTrapDesc) {
+        bnTrapDesc.textContent = `Panic sell-off / Breakdown likely at ${bankSupport.toLocaleString('en-IN')}!`;
+        bnTrapDesc.style.color = "#ef4444";
+      }
+      const icon = bnTrapBox.querySelector('i');
+      if (icon) icon.style.color = "#f87171";
+      bnTrapBox.style.backgroundColor = "rgba(127, 29, 29, 0.4)";
+      bnTrapBox.style.borderColor = "rgba(239, 68, 68, 0.6)";
+      bnTrapBox.style.display = 'flex';
+    } else {
+      bnTrapBox.style.display = 'none';
+    }
   }
   
 
@@ -3782,6 +3845,9 @@ const mockStocks = [
 
 // Pre-process signals
 function preprocess(sigs){
+  // 0. Enrich sectorMapping from live scan sector data
+  enrichSectorMapping(sigs);
+
   // 1. Map all actual scanned signals
   const scanned = (sigs||[]).map(s=>{
     if (s.change === undefined || s.change === null || isNaN(s.change)) {
@@ -3891,7 +3957,7 @@ function updateCounts(){
   
   let base=stocks.filter(s=>s.vol_ratio>=vm && (!srch||s.symbol.toLowerCase().includes(srch)));
   if (activeSector) {
-    base = base.filter(s => sectorMapping[s.symbol] === activeSector);
+    base = base.filter(s => getStockSector(s) === activeSector);
   }
 
   const counts={
@@ -4078,7 +4144,7 @@ function render(isTick = false){
   // 1. Sector & Search pre-filter
   let f = stocks.filter(s => s.vol_ratio >= vm && (!srch || s.symbol.toLowerCase().includes(srch)));
   if (activeSector) {
-    f = f.filter(s => sectorMapping[s.symbol] === activeSector);
+    f = f.filter(s => getStockSector(s) === activeSector);
   }
 
   // 2. Tab filters
@@ -4144,7 +4210,7 @@ function render(isTick = false){
               ${s.symbol}
               ${s.isMock ? `<span class="demo-badge" style="background:rgba(148,163,184,0.1);color:#94a3b8;border:1px solid rgba(148,163,184,0.3);border-radius:4px;padding:1px 4px;font-size:7.5px;font-weight:800;margin-left:4px;vertical-align:middle">DEMO</span>` : ''}
             </div>
-            <div style="font-size:9px; color:var(--text-muted); font-weight:600">${sectorMapping[s.symbol] || 'Equity'}</div>
+            <div style="font-size:9px; color:var(--text-muted); font-weight:600">${getStockSector(s)}</div>
           </div>
           <div style="display:flex; align-items:end; justify-content:space-between; margin-top:auto">
             <div>
@@ -4467,7 +4533,7 @@ function render(isTick = false){
             <div style="display:flex; flex-direction:column; gap:12px">
               <div style="display:flex; justify-content:space-between; align-items:center">
                 <span style="font-size:11px; font-weight:800; color:var(--pro-electric)">📊 ADVANCED SCAN METRICS</span>
-                <span style="font-size:10px; color:var(--text-muted)">Sector segment: <b>${sectorMapping[s.symbol] || 'General Equity'}</b></span>
+                <span style="font-size:10px; color:var(--text-muted)">Sector segment: <b>${getStockSector(s)}</b></span>
               </div>
               <div style="display:grid; grid-template-columns:repeat(5, 1fr); gap:6px; text-align:center">
                 <div style="background:#450a0a; border: 1px solid rgba(244,63,94,0.15); border-radius:6px; padding:6px 4px">

@@ -79,8 +79,8 @@ CFG: Dict = {
     # default MIN_PRICE set to 50.0 INR and MAX_52W_AGE set to 180 days
     "MIN_PRICE":      float(os.getenv("MIN_PRICE",      "50.0")),
     "MAX_52W_AGE":    int(os.getenv("MAX_52W_AGE",    "180")),
-    "STOCK_TIMEOUT":  int(os.getenv("STOCK_TIMEOUT",  "8")),
-    "SCAN_DEADLINE":  int(os.getenv("SCAN_DEADLINE",  "120")),
+    "STOCK_TIMEOUT":  int(os.getenv("STOCK_TIMEOUT",  "30")),
+    "SCAN_DEADLINE":  int(os.getenv("SCAN_DEADLINE",  "600")),
 }
 
 SKIP_TICKERS = {
@@ -636,7 +636,7 @@ def fetch_with_timeout(
     bearish: bool = False,
     cfg_override: Optional[Dict] = None,
     explain_skip: bool = False,
-    timeout: int = 8,
+    timeout: int = 30,
 ) -> Optional[Dict]:
     """
     Wraps analyse() with a hard per-stock timeout.
