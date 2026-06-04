@@ -562,24 +562,17 @@ def _download(ticker: str, retries: int = 3, use_cache_only: bool = False) -> Op
                 pass
         return None
 
-    # Check cache validity — 15 min TTL during NSE market hours, 1 hour otherwise
+    # Check cache validity — 12 hour TTL
     if os.path.exists(cache_path):
         try:
             mtime = os.path.getmtime(cache_path)
-            # Determine TTL: 15 min during NSE market hours (09:15–15:30 IST)
-            from datetime import datetime, timezone, timedelta
-            _ist = timezone(timedelta(hours=5, minutes=30))
-            _now_ist = datetime.now(_ist)
-            _market_open  = _now_ist.replace(hour=9,  minute=15, second=0, microsecond=0)
-            _market_close = _now_ist.replace(hour=15, minute=30, second=0, microsecond=0)
-            _in_market = _market_open <= _now_ist <= _market_close
-            _ttl = 900 if _in_market else 3600   # 15 min in market, 1 hr otherwise
+            _ttl = 43200   # 12 hours EOD cache TTL
             if time.time() - mtime < _ttl:
                 df = pd.read_csv(cache_path, index_col=0, parse_dates=True)
                 if df is not None and not df.empty:
                     df = normalize_dataframe(df)
                     if df is not None and not df.empty:
-                        log.debug(f"{ticker}: Loaded from local cache (TTL={'15min' if _in_market else '1hr'})")
+                        log.debug(f"{ticker}: Loaded from local cache (TTL=12hr)")
                         return df
         except Exception:
             pass
@@ -588,7 +581,7 @@ def _download(ticker: str, retries: int = 3, use_cache_only: bool = False) -> Op
         try:
             df = yf.download(
                 ticker,
-                period="5y",
+                period="2y",
                 interval="1d",
                 progress=False,
                 auto_adjust=True,
@@ -732,18 +725,6 @@ def analyse(
         prev_close_fi = None   # fast_info previous_close — always accurate
 
         try:
-            # Warm up ticker cache with fresh 1-min bar first
-            ticker_obj.history(
-                period="1d",
-                interval="1m",
-                auto_adjust=True,
-                prepost=False,
-                repair=True,
-            )
-        except Exception as e:
-            log.warning(f"Error forcing 1m history for {ticker}: {e}")
-
-        try:
             fast = ticker_obj.fast_info
             live_price    = fast.get('lastPrice') or fast.get('last_price')
             prev_close_fi = fast.get('regularMarketPreviousClose') or fast.get('previousClose') or fast.get('previous_close')
@@ -752,8 +733,23 @@ def analyse(
             
             day_high      = fast.get('dayHigh') or fast.get('day_high')
             day_low       = fast.get('dayLow') or fast.get('day_low')
+            day_open      = fast.get('open')
             
             if live_price is not None:
+                from datetime import date
+                today_date = date.today()
+                last_date  = df.index[-1].date()
+                
+                # If today is a weekday and last row is from a previous day, append a new row for today
+                if today_date.weekday() < 5 and last_date < today_date:
+                    new_open = float(day_open) if day_open is not None else float(live_price)
+                    new_row = pd.DataFrame(
+                        [[new_open, new_open, new_open, float(live_price), 0.0]], 
+                        columns=["open", "high", "low", "close", "volume"],
+                        index=[pd.Timestamp(today_date)]
+                    )
+                    df = pd.concat([df, new_row])
+                
                 df.at[df.index[-1], "close"] = float(live_price)
                 
                 # Update high/low/open to prevent structural violations (high < close, low > close etc)
