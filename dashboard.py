@@ -671,8 +671,83 @@ def export_csv():
     if not s["signals"]:
         return jsonify({"error": "No results to export"}), 404
 
+    # Read filter query parameters to align CSV export with dashboard view
+    try:
+        vol_mult = float(request.args.get("vol_mult", 0.0))
+    except Exception:
+        vol_mult = 0.0
+
+    try:
+        turnover_limit = float(request.args.get("turnover_limit", 0.0))
+    except Exception:
+        turnover_limit = 0.0
+
+    try:
+        min_price = float(request.args.get("min_price", 0.0))
+    except Exception:
+        min_price = 0.0
+
+    active_tab = request.args.get("active_tab", "camarilla")
+    active_sub_tab = request.args.get("active_sub_tab", "all")
+
     rows = []
     for r in s["signals"]:
+        price = r.get("price", 0.0)
+        vol_ratio = r.get("vol_ratio", 0.0)
+        # turnover_score in signals is in Crores (1 Crore = 10,000,000 INR)
+        turnover_inr = r.get("turnover_score", 0.0) * 10000000.0
+
+        # Apply basic control panel filters
+        if vol_ratio < vol_mult:
+            continue
+        if turnover_inr < turnover_limit:
+            continue
+        if price < min_price:
+            continue
+
+        # Apply Tab Filters matching the frontend render() logic
+        signal_type = r.get("signal_type", "Bull")
+        candle = r.get("candle", "Bull")
+        symbol = r.get("symbol", "")
+
+        # Watchlist filter
+        if active_tab == 'watchlist':
+            watchlist = _load_watchlist()
+            if symbol not in watchlist:
+                continue
+
+        # ProTrader filter
+        if active_tab == 'protrader':
+            if vol_ratio < 1.2:
+                continue
+
+        # Camarilla sub-tab filters
+        if active_tab == 'camarilla':
+            if active_sub_tab == 'bullish':
+                if not (signal_type == 'Bull' and candle == 'Bull'):
+                    continue
+            elif active_sub_tab == 'bearish':
+                if not (signal_type == 'Bear' and candle == 'Bear'):
+                    continue
+            elif active_sub_tab == 'mixed':
+                is_mixed = (signal_type == 'Bull' and candle == 'Bear') or (signal_type == 'Bear' and candle == 'Bull')
+                if not is_mixed:
+                    continue
+            elif active_sub_tab == 'entry':
+                entry_val = r.get("entry", 0.0)
+                if entry_val <= 0 or abs(price - entry_val) / entry_val > 0.02:
+                    continue
+            elif active_sub_tab == 'fresh':
+                dist = r.get("dist_from_entry")
+                if dist is None:
+                    entry_val = r.get("entry", 0.0)
+                    dist = abs((price - entry_val) / entry_val * 100) if entry_val > 0 else 999.0
+                if abs(dist) > 5.0:
+                    continue
+            elif active_sub_tab == 'hv':
+                if r.get("days", 999) > 10:
+                    continue
+
         rows.append({
             "Symbol":          r.get("symbol"),
             "Score":           r.get("score"),
@@ -706,8 +781,19 @@ def export_csv():
             "Scanned_At":      s["last_scan"],
         })
 
+    if not rows:
+        df = pd.DataFrame(columns=[
+            "Symbol", "Score", "Regime_Score", "Confidence", "Strength", "Signal", "Price",
+            "Entry", "Dist_From_Entry_%", "Target_H3", "Target_H4", "StopLoss_L3", "Risk_%",
+            "R:R", "Upside_%", "Vol_Ratio", "Candle", "EMA10", "EMA20", "EMA50", "EMA200",
+            "HV_High", "HV_Low", "HV_Date", "Days", "RS_Pct", "Turnover_Cr", "Sparkline",
+            "Scanned_Time", "Scanned_At"
+        ])
+    else:
+        df = pd.DataFrame(rows)
+
     buf = io.StringIO()
-    pd.DataFrame(rows).to_csv(buf, index=False)
+    df.to_csv(buf, index=False)
     buf.seek(0)
     fname = f"nse_scan_{datetime.now().strftime('%Y%m%d_%H%M')}.csv"
     return send_file(
@@ -4816,7 +4902,13 @@ function exportCSV(){
     showToast('No signals available to export.', true);
     return;
   }
-  window.location.href='/export';
+  const vm = document.getElementById('volMult') ? document.getElementById('volMult').value : '1.5';
+  const turnover = document.getElementById('turnoverLimit') ? document.getElementById('turnoverLimit').value : '100000000';
+  const minPrice = document.getElementById('minPrice') ? document.getElementById('minPrice').value : '50';
+  const tab = typeof activeTab !== 'undefined' ? activeTab : 'camarilla';
+  const subTab = typeof activeSubTab !== 'undefined' ? activeSubTab : 'all';
+  
+  window.location.href = `/export?vol_mult=${vm}&turnover_limit=${turnover}&min_price=${minPrice}&active_tab=${tab}&active_sub_tab=${subTab}`;
 }
 
 function triggerAlerts(){
