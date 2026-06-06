@@ -1107,13 +1107,15 @@ def analyse(
         rs_50d = round(stock_ret_50d - nifty_50d, 2)
         
         # Enforce positive 50-day relative strength for Bullish, or negative for Bearish
-        if not bearish and rs_50d <= 0:
-            log.info(f"🚩 {ticker}: Rejected due to negative 50-day relative strength ({rs_50d:.2f}% <= 0)")
+        # FIX A: floor is dynamic — defaults to -5.0, loosened further to -8.0 in bear regimes via run_scan()
+        rs_50d_floor = float(cfg.get("rs_50d_floor", -5.0))
+        if not bearish and rs_50d <= rs_50d_floor:
+            log.info(f"🚩 {ticker}: Rejected due to weak 50-day relative strength ({rs_50d:.2f}% <= {rs_50d_floor:.1f}%)")
             if explain_skip:
                 return {
                     "symbol": ticker.replace(".NS", ""),
                     "skipped": True,
-                    "reason": f"Negative 50-day relative strength ({rs_50d:.2f}% <= 0)"
+                    "reason": f"Weak 50-day relative strength ({rs_50d:.2f}% <= {rs_50d_floor:.1f}%)"
                 }
             return None
         elif bearish and rs_50d >= 0:
@@ -1128,8 +1130,9 @@ def analyse(
 
         # ── BUY Scan Strict Trend/Momentum Filters ─────────────
         if not bearish:
-            # 1. Day change filter: exclude if day change is less than -1.0%
-            if day_change < -1.0:
+            # 1. Day change filter: only apply during live market (after-hours = yesterday's close, not useful as a filter)
+            # FIX B: skip this filter when market is closed — swing setups should not be penalised for yesterday's red
+            if is_nse_market_open() and day_change < -1.0:
                 log.info(f"🚩 {ticker}: Excluded from BUY scan due to negative day change ({day_change:.2f}% < -1.0%)")
                 if explain_skip:
                     return {
@@ -1551,6 +1554,13 @@ def run_scan(
     log.info(f"📊 Market Regime: {regime_name} | "
              f"Breadth: {regime_data.get('breadth', 50)}% | "
              f"NIFTY: ₹{regime_data.get('nifty_close', 0):,.2f}")
+
+    # FIX C: In bear regimes, automatically loosen the RS 50d floor to -8.0
+    # so that stocks only slightly underperforming Nifty still show up
+    if regime_name in ("BEAR", "STRONG_BEAR"):
+        cfg_override = dict(cfg_override or {})
+        cfg_override.setdefault("rs_50d_floor", -8.0)
+        log.info(f"🐻 Bear regime detected — loosening RS 50d floor to {cfg_override['rs_50d_floor']:.1f}%")
 
     with ThreadPoolExecutor(max_workers=workers) as pool:
         futures = {pool.submit(_task, t): t for t in tickers}
