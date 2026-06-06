@@ -305,16 +305,29 @@ def _do_scan(params: dict, scan_id: str) -> None:
         if not _stop_event.is_set():
             save_csv(all_signals)
             now   = datetime.now().strftime("%d %b %Y %H:%M")
-            _update_state(
-                signals=all_signals,
-                last_scan=now,
-                scanning=False,
-                scan_id=None,
-                regime=regime_data,
-                error=None,
-                progress={"current": len(tickers), "total": len(tickers),
-                           "ticker": "Done", "eta": 0},
-            )
+            if len(all_signals) > 0:
+                _update_state(
+                    signals=all_signals,
+                    last_scan=now,
+                    scanning=False,
+                    scan_id=None,
+                    regime=regime_data,
+                    error=None,
+                    progress={"current": len(tickers), "total": len(tickers),
+                               "ticker": "Done", "eta": 0},
+                )
+            else:
+                import logging
+                logging.getLogger("NSEScanner").warning("Scan returned 0 signals — keeping previous results")
+                _update_state(
+                    last_scan=now + " (0 new)",
+                    scanning=False,
+                    scan_id=None,
+                    regime=regime_data,
+                    error=None,
+                    progress={"current": len(tickers), "total": len(tickers),
+                               "ticker": "Done", "eta": 0},
+                )
             if all_signals:
                 send_telegram(all_signals, cfg_override=cfg_override)
                 send_whatsapp(all_signals, cfg_override=cfg_override)

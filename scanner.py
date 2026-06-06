@@ -1489,10 +1489,17 @@ def run_scan(
     progress_cb(current, total, ticker, eta_seconds) is called after each ticker.
     stop_event: set it to cancel an in-progress scan gracefully.
     """
+    cfg_override = dict(cfg_override or {})
     raw_tickers = list(tickers or NIFTY500_SAMPLE)
     # Fix 1: Warn if market is closed but proceed using last session data
     if not is_nse_market_open():
         log.warning("⚠️ NSE Market is closed — proceeding with last session data...")
+        orig_vol_mult = float(cfg_override.get("VOL_MULT", CFG["VOL_MULT"]))
+        effective_vol_mult = min(orig_vol_mult, 0.5)
+        log.warning(f"Market closed — lowering VOL_MULT from "
+                    f"{orig_vol_mult} to {effective_vol_mult} "
+                    f"for after-hours scan")
+        cfg_override["VOL_MULT"] = effective_vol_mult
     tickers = [t for t in raw_tickers if t not in SKIP_TICKERS]
     skipped_count = len(raw_tickers) - len(tickers)
     if skipped_count > 0:
