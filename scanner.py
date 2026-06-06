@@ -51,7 +51,7 @@ log = logging.getLogger("NSEScanner")
 CFG: Dict = {
     # Volume: today's vol must be >= VOL_MULT × VOL_DAYS-day average
     "VOL_DAYS":       int(os.getenv("VOL_DAYS",       "10")),
-    "VOL_MULT":       float(os.getenv("VOL_MULT",     "2.0")),
+    "VOL_MULT":       float(os.getenv("VOL_MULT",     "1.0")),
     # EMA filters — set env to "false" to skip that particular EMA
     "EMA_10":         os.getenv("EMA_10",  "true").lower() == "true",
     "EMA_20":         os.getenv("EMA_20",  "true").lower() == "true",

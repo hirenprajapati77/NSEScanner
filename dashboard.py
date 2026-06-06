@@ -2212,9 +2212,9 @@ tbody tr:hover td:first-child {
       <option value="0.1">0.1x (Early Morning)</option>
       <option value="0.2">0.2x (Morning Scan)</option>
       <option value="0.5">0.5x (Early Session)</option>
-      <option value="1.0">1.0x (Standard)</option>
+      <option value="1.0" selected>1.0x (Standard)</option>
       <option value="1.5">1.5x</option>
-      <option value="2" selected>2x</option>
+      <option value="2">2x</option>
       <option value="2.5">2.5x</option>
       <option value="3">3x</option>
     </select>
