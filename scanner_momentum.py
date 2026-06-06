@@ -19,7 +19,9 @@ def check_buy_signal(stock_data, market_regime):
     # CONDITION 2: Camarilla H4 breakout
     h4 = d.get('camarilla_h4', 0)
     close = d.get('close', 0)
-    if h4 > 0 and close > h4 * 1.001:  # 0.1% buffer above H4
+    if regime in ("BEAR", "STRONG_BEAR"):
+        reasons_pass.append(f"H4 breakout check skipped in bear regime ({regime})")
+    elif h4 > 0 and close > h4 * 1.001:  # 0.1% buffer above H4
         reasons_pass.append(f"H4 breakout ✓ ({close:.1f} > {h4:.1f})")
     else:
         reasons_fail.append(f"No H4 breakout ({close:.1f} vs {h4:.1f})")

@@ -1109,8 +1109,8 @@ def analyse(
         rs_50d = round(stock_ret_50d - nifty_50d, 2)
         
         # Enforce positive 50-day relative strength for Bullish, or negative for Bearish
-        # FIX A: floor is dynamic — defaults to -5.0, loosened further to -8.0 in bear regimes via run_scan()
-        rs_50d_floor = float(cfg.get("rs_50d_floor", -5.0))
+        # FIX A: floor is dynamic — defaults to -10.0, loosened further to -10.0 in bear regimes via run_scan()
+        rs_50d_floor = float(cfg.get("rs_50d_floor", -10.0))
         if not bearish and rs_50d <= rs_50d_floor:
             log.info(f"🚩 {ticker}: Rejected due to weak 50-day relative strength ({rs_50d:.2f}% <= {rs_50d_floor:.1f}%)")
             if explain_skip:
@@ -1223,8 +1223,9 @@ def analyse(
             regime = "Consolidation"
 
         # ── Critical Fix #3: Risk / Reward Calculations with ATR-based Stop Loss Cap ───
-        # Enforce a minimum stop-loss distance of 1.5 * ATR to prevent dangerously tight stops
-        min_risk_distance = 1.5 * last_atr
+        # Enforce a minimum stop-loss distance of 1.5 * ATR (or 1.0 * ATR in BEAR regime) to prevent dangerously tight stops
+        atr_multiplier = 1.0 if nifty_regime in ("BEAR", "STRONG_BEAR") else 1.5
+        min_risk_distance = atr_multiplier * last_atr
         
         if not bearish:
             # Bullish: risk = entry - stop_loss
@@ -1562,11 +1563,11 @@ def run_scan(
              f"Breadth: {regime_data.get('breadth', 50)}% | "
              f"NIFTY: ₹{regime_data.get('nifty_close', 0):,.2f}")
 
-    # FIX C: In bear regimes, automatically loosen the RS 50d floor to -8.0
+    # FIX C: In bear regimes, automatically loosen the RS 50d floor to -10.0
     # so that stocks only slightly underperforming Nifty still show up
     if regime_name in ("BEAR", "STRONG_BEAR"):
         cfg_override = dict(cfg_override or {})
-        cfg_override.setdefault("rs_50d_floor", -8.0)
+        cfg_override.setdefault("rs_50d_floor", -10.0)
         log.info(f"🐻 Bear regime detected — loosening RS 50d floor to {cfg_override['rs_50d_floor']:.1f}%")
 
     with ThreadPoolExecutor(max_workers=workers) as pool:
