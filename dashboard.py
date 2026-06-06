@@ -2241,8 +2241,8 @@ tbody tr:hover td:first-child {
     <div class="ema-filters">
       <label class="ema-chip on" id="c10"><input type="checkbox" checked onchange="toggleEMA(this,'10')">10</label>
       <label class="ema-chip on" id="c20"><input type="checkbox" checked onchange="toggleEMA(this,'20')">20</label>
-      <label class="ema-chip on" id="c50"><input type="checkbox" checked onchange="toggleEMA(this,'50')">50</label>
-      <label class="ema-chip on" id="c200"><input type="checkbox" checked onchange="toggleEMA(this,'200')">200</label>
+      <label class="ema-chip" id="c50"><input type="checkbox" onchange="toggleEMA(this,'50')">50</label>
+      <label class="ema-chip" id="c200"><input type="checkbox" onchange="toggleEMA(this,'200')">200</label>
     </div>
     
     <button class="btn" id="scanBtn" onclick="startScan()">
@@ -2306,7 +2306,7 @@ tbody tr:hover td:first-child {
       </div>
 
       <!-- Progress Bar (shown when active scan is running) -->
-      <div class="prog-wrap" id="progWrap" style="margin: 0 20px 10px 20px; border-radius: 6px;">
+      <div class="prog-wrap" id="progWrap" style="margin: 0 20px 10px 20px; border-radius: 6px; display: none;">
         <div class="prog-bar-bg">
           <div class="prog-bar-fill" id="progFill"></div>
         </div>
@@ -2664,7 +2664,7 @@ let journalTrades = [];
 let activeTab = 'home';
 let activeSubTab = 'all';
 let sortState = {col:'score', desc:true};
-const emaReq = {10:true, 20:true, 50:true, 200:true};
+const emaReq = {10:true, 20:true, 50:false, 200:false};
 let pollTimer = null;
 let autoTimer = null;
 let remaining = 300;
@@ -4276,9 +4276,12 @@ function render(isTick = false){
   }
 
   if(!f.length){
-    tbody.innerHTML=`<tr><td colspan="20" class="empty-state">
-      <i class="ti ti-chart-candlestick" style="font-size:32px;color:var(--text-muted);display:block;margin-bottom:8px"></i>
-      No signals matching current filters. Click <b>Run Live Scan</b> or search tickers.</td></tr>`;
+    const colCount = activeTab === 'protrader' ? 8 : 27;
+    tbody.innerHTML=`<tr><td colspan="${colCount}" class="empty-state" style="text-align: center; padding: 40px 20px;">
+      <i class="ti ti-chart-candlestick" style="font-size:32px;color:var(--text-muted);display:block;margin:0 auto 8px auto"></i>
+      No results yet — configure filters and click Run Live Scan. <br>
+      <span style="font-size: 11px; color: var(--text-muted);">Scanning works even when market is closed (uses previous session data)</span>
+    </td></tr>`;
     return;
   }
 
@@ -4619,12 +4622,14 @@ function setScanningUI(on){
     btn.innerHTML='<span class="ti ti-loader-quarter animate-spin" style="display:inline-block"></span> Scanning…';
     stop.removeAttribute('disabled');
     prog.classList.add('show');
+    prog.style.display = 'flex';
     document.getElementById('pageTitle').textContent='Scanning Market… | ProTrader';
   } else {
     btn.classList.remove('scanning'); btn.disabled=false;
     btn.innerHTML='<i class="ti ti-scan"></i> Run Live Scan';
     stop.setAttribute('disabled', 'true');
     prog.classList.remove('show');
+    prog.style.display = 'none';
     document.getElementById('pageTitle').textContent='ProTrader Terminal | Indian NSE Intraday F&O Signals Dashboard';
   }
 }

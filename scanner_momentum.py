@@ -28,20 +28,39 @@ def check_buy_signal(stock_data, market_regime):
     else:
         reasons_fail.append(f"No H4 breakout ({close:.1f} vs {h4:.1f})")
     
-    # CONDITION 3: EMA alignment
-    ema20 = d.get('ema20', 0)
-    ema50 = d.get('ema50', 0)
-    ema200 = d.get('ema200', 0)
-    ema_aligned = ema20 > ema50 > ema200
-    close_above_ema20 = close > ema20
-    
-    if ema_aligned and close_above_ema20:
-        reasons_pass.append("EMA alignment ✓ (20>50>200, close>EMA20)")
+    # CONDITION 3: EMA alignment (dynamic based on enabled EMAs)
+    enabled_emas = []
+    if d.get("ema10_on", True):
+        enabled_emas.append((10, d.get("ema10", 0)))
+    if d.get("ema20_on", True):
+        enabled_emas.append((20, d.get("ema20", 0)))
+    if d.get("ema50_on", True):
+        enabled_emas.append((50, d.get("ema50", 0)))
+    if d.get("ema200_on", True):
+        enabled_emas.append((200, d.get("ema200", 0)))
+
+    ema_aligned = True
+    for i in range(len(enabled_emas) - 1):
+        if enabled_emas[i][1] <= enabled_emas[i+1][1]:
+            ema_aligned = False
+            break
+
+    close_above_enabled = True
+    for span, val in enabled_emas:
+        if close <= val:
+            close_above_enabled = False
+            break
+
+    if ema_aligned and close_above_enabled:
+        label = ">".join(str(span) for span, val in enabled_emas)
+        reasons_pass.append(f"EMA alignment ✓ ({label if label else 'None'}, close>enabled EMAs)")
     else:
         if not ema_aligned:
-            reasons_fail.append(f"EMA misaligned ({ema20:.1f}/{ema50:.1f}/{ema200:.1f})")
-        if not close_above_ema20:
-            reasons_fail.append(f"Close below EMA20 ({close:.1f} < {ema20:.1f})")
+            vals_str = "/".join(f"{val:.1f}" for span, val in enabled_emas)
+            reasons_fail.append(f"EMA misaligned ({vals_str})")
+        if not close_above_enabled:
+            failed_spans = [str(span) for span, val in enabled_emas if close <= val]
+            reasons_fail.append(f"Close below enabled EMA ({', '.join(failed_spans)})")
     
     # CONDITION 4: Relative Volume
     rvol = d.get('rvol', 0)
@@ -57,6 +76,7 @@ def check_buy_signal(stock_data, market_regime):
     risk = entry - sl
     reward = t1 - entry
     rr = reward / risk if risk > 0 else 0.0
+    rr = min(99.0, rr)
     
     if rr >= 1.5:
         reasons_pass.append(f"RR ✓ ({rr:.1f}:1)")

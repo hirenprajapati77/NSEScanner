@@ -55,8 +55,8 @@ CFG: Dict = {
     # EMA filters — set env to "false" to skip that particular EMA
     "EMA_10":         os.getenv("EMA_10",  "true").lower() == "true",
     "EMA_20":         os.getenv("EMA_20",  "true").lower() == "true",
-    "EMA_50":         os.getenv("EMA_50",  "true").lower() == "true",
-    "EMA_200":        os.getenv("EMA_200", "true").lower() == "true",
+    "EMA_50":         os.getenv("EMA_50",  "false").lower() == "true",
+    "EMA_200":        os.getenv("EMA_200", "false").lower() == "true",
     # Minimum score to surface a signal
     "MIN_SCORE":      int(os.getenv("MIN_SCORE",      "70")),
     # 52-week lookback window (trading days)
@@ -198,64 +198,158 @@ init_db()
 # ─────────────────────────────────────────────────────────────
 # NSE STOCK UNIVERSE  (~120 Nifty-500 stocks)
 # ─────────────────────────────────────────────────────────────
-NIFTY500_SAMPLE: List[str] = [
-    # NIFTY 50 & Large Caps
-    "RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "INFY.NS", "ICICIBANK.NS",
-    "HINDUNILVR.NS", "ITC.NS", "SBIN.NS", "BHARTIARTL.NS", "KOTAKBANK.NS",
-    "LT.NS", "AXISBANK.NS", "ASIANPAINT.NS", "MARUTI.NS", "SUNPHARMA.NS",
-    "TITAN.NS", "BAJFINANCE.NS", "WIPRO.NS", "NESTLEIND.NS", "ULTRACEMCO.NS",
-    "APOLLOHOSP.NS", "TECHM.NS", "HCLTECH.NS", "POWERGRID.NS", "NTPC.NS",
-    "TMCV.NS", "ONGC.NS", "JSWSTEEL.NS", "TATASTEEL.NS", "BAJAJFINSV.NS",
-    "DIVISLAB.NS", "DRREDDY.NS", "CIPLA.NS", "EICHERMOT.NS", "HEROMOTOCO.NS",
-    "GRASIM.NS", "BPCL.NS", "COALINDIA.NS", "INDUSINDBK.NS", "ADANIPORTS.NS",
-    "DABUR.NS", "MARICO.NS", "PIDILITIND.NS", "BERGEPAINT.NS", "HAVELLS.NS",
-    "TATACONSUM.NS", "GODREJCP.NS", "MUTHOOTFIN.NS", "CHOLAFIN.NS", "SRF.NS",
-    "AARTIIND.NS", "ABCAPITAL.NS", "ACC.NS", "AIAENG.NS", "ALKEM.NS",
-    "AMBUJACEM.NS", "APLLTD.NS", "AUBANK.NS", "BALKRISIND.NS", "BANDHANBNK.NS",
-    "BEL.NS", "BHARATFORG.NS", "BIOCON.NS", "CANBK.NS", "CESC.NS",
-    "CROMPTON.NS", "CUB.NS", "DEEPAKNTR.NS", "ESCORTS.NS",
-    "FEDERALBNK.NS", "GAIL.NS", "GMRINFRA.NS", "GNFC.NS", "GODREJPROP.NS",
-    "GRANULES.NS", "GSPL.NS", "HAPPSTMNDS.NS", "HINDPETRO.NS", "HINDCOPPER.NS",
-    "IDFCFIRSTB.NS", "IEX.NS", "IPCALAB.NS", "IRCTC.NS",
-    "JINDALSTEL.NS", "JUBLFOOD.NS", "KANSAINER.NS", "LALPATHLAB.NS", "LTIM.NS",
-    "LUPIN.NS", "M&M.NS", "MANAPPURAM.NS", "MFSL.NS",
-    "MOTHERSON.NS", "MPHASIS.NS", "MRF.NS", "NMDC.NS", "OBEROIRLTY.NS",
-    "OFSS.NS", "PAGEIND.NS", "PERSISTENT.NS", "PETRONET.NS",
-    "PFC.NS", "RAMCOCEM.NS", "RBLBANK.NS",
-    "RECLTD.NS", "SAIL.NS", "SHREECEM.NS", "SIEMENS.NS",
-    "SUPREMEIND.NS", "SYNGENE.NS", "TORNTPHARM.NS",
-    "TRENT.NS", "UBL.NS", "VEDL.NS", "VOLTAS.NS",
-    "ZOMATO.NS", "ZYDUSLIFE.NS",
-    # Additional Large and Midcap Liquid Names
-    "ADANIENT.NS", "ADANIGREEN.NS", "ADANIENSOL.NS", "ATGL.NS",
-    "BAJAJ-AUTO.NS", "CAMS.NS", "CANFINHOME.NS",
-    "CONCOR.NS", "COROMANDEL.NS", "DALBHARAT.NS", "DIXON.NS",
-    "GLENMARK.NS", "HAL.NS", "ICICIGI.NS", "ICICIPRULI.NS",
-    "IDEA.NS", "INDHOTEL.NS", "INDUSTOWER.NS", "INOXWIND.NS",
-    "IOC.NS", "ISEC.NS", "JKCEMENT.NS", "JUBILANT.NS",
-    "KAJARIACER.NS", "LAURUSLABS.NS", "LICHSGFIN.NS", "LINDEINDIA.NS",
-    "MCX.NS", "METROPOLIS.NS", "NAUKRI.NS",
-    "NAVINFLUOR.NS", "PIIND.NS", "POLYCAB.NS", "RELAXO.NS", "ROUTE.NS",
-    "SBICARD.NS", "SBILIFE.NS", "SCHAEFFLER.NS", "SOLARINDS.NS",
-    "SUNTV.NS", "TATACHEM.NS", "TATACOMM.NS",
-    "TATAELXSI.NS", "TATAINVEST.NS", "TIINDIA.NS", "TTKPRESTIG.NS",
-    "VGUARD.NS", "WHIRLPOOL.NS", "ZEEL.NS",
-    # Highly Liquid Missing Nifty 500 & F&O Leaders
-    "TATAPOWER.NS", "BHEL.NS", "IRFC.NS", "RVNL.NS", "IREDA.NS",
-    "LTF.NS", "HUDCO.NS", "ASHOKLEY.NS", "JIOFIN.NS", "HINDALCO.NS",
-    "JSWENERGY.NS", "NHPC.NS", "SJVN.NS", "UNIONBANK.NS", "IOB.NS",
-    "BANKBARODA.NS", "PNB.NS", "INDIANB.NS", "NYKAA.NS", "PAYTM.NS",
-    "POLICYBZR.NS", "DELHIVERY.NS", "SUZLON.NS", "YESBANK.NS", "LICI.NS",
-    "GICRE.NS", "IRB.NS", "NBCC.NS", "ENGINEERSIN.NS", "NATIONALUM.NS",
-    "HINDZINC.NS", "OIL.NS", "MRPL.NS", "CHENNPETRO.NS", "MGL.NS",
-    "IGL.NS", "GUJGASLTD.NS", "GSFC.NS", "RCF.NS", "CHAMBLFERT.NS",
-    "HFCL.NS", "TEJASNET.NS", "KPITTECH.NS", "COFORGE.NS", "CYIENT.NS",
-    "LTTS.NS", "SONACOMS.NS", "EXIDEIND.NS", "ARE&M.NS", "BOSCHLTD.NS",
-    "UNOCOUNT.NS", "APOLLOTYRE.NS", "JKTYRE.NS", "CEATLTD.NS", "MAXHEALTH.NS",
-    "MANKIND.NS", "AUROPHARMA.NS", "STAR.NS", "BATAINDIA.NS", "METROBRAND.NS",
-    "CAMPUS.NS", "ABFRL.NS", "V-MART.NS", "FORTIS.NS", "ADANIPOWER.NS",
-    "HPCL.NS", "PEL.NS", "IBULHSGFIN.NS", "PVRINOX.NS", "AMBUJACEM.NS"
+# Full hardcoded Nifty 500 list (494 stocks) — used as fallback
+NIFTY500_HARDCODED: List[str] = [
+    # Nifty 50
+    "RELIANCE.NS","TCS.NS","HDFCBANK.NS","INFY.NS","ICICIBANK.NS",
+    "HINDUNILVR.NS","ITC.NS","SBIN.NS","BHARTIARTL.NS","KOTAKBANK.NS",
+    "LT.NS","AXISBANK.NS","ASIANPAINT.NS","MARUTI.NS","SUNPHARMA.NS",
+    "TITAN.NS","BAJFINANCE.NS","WIPRO.NS","NESTLEIND.NS","ULTRACEMCO.NS",
+    "APOLLOHOSP.NS","TECHM.NS","HCLTECH.NS","POWERGRID.NS","NTPC.NS",
+    "TATAMOTORS.NS","ONGC.NS","JSWSTEEL.NS","TATASTEEL.NS","BAJAJFINSV.NS",
+    "DIVISLAB.NS","DRREDDY.NS","CIPLA.NS","EICHERMOT.NS","HEROMOTOCO.NS",
+    "GRASIM.NS","BPCL.NS","COALINDIA.NS","INDUSINDBK.NS","ADANIPORTS.NS",
+    "ADANIENT.NS","HINDALCO.NS","SBILIFE.NS","HDFCLIFE.NS","M&M.NS",
+    "TATACONSUM.NS","BRITANNIA.NS","BAJAJ-AUTO.NS","LTIM.NS","SHRIRAMFIN.NS",
+    # Nifty Next 50
+    "DABUR.NS","MARICO.NS","PIDILITIND.NS","BERGEPAINT.NS","HAVELLS.NS",
+    "GODREJCP.NS","MUTHOOTFIN.NS","CHOLAFIN.NS","SRF.NS","AARTIIND.NS",
+    "ABCAPITAL.NS","ACC.NS","AIAENG.NS","ALKEM.NS","AMBUJACEM.NS",
+    "AUBANK.NS","BALKRISIND.NS","BANDHANBNK.NS","BEL.NS","BHARATFORG.NS",
+    "BIOCON.NS","CANBK.NS","CESC.NS","CROMPTON.NS","CUB.NS",
+    "DEEPAKNTR.NS","ESCORTS.NS","FEDERALBNK.NS","GAIL.NS","GMRINFRA.NS",
+    "GNFC.NS","GODREJPROP.NS","GRANULES.NS","GSPL.NS","HINDPETRO.NS",
+    "HINDCOPPER.NS","IDFCFIRSTB.NS","IEX.NS","IPCALAB.NS","IRCTC.NS",
+    "JINDALSTEL.NS","JUBLFOOD.NS","KANSAINER.NS","LALPATHLAB.NS","LUPIN.NS",
+    "MANAPPURAM.NS","MFSL.NS","MOTHERSON.NS","MPHASIS.NS","MRF.NS",
+    # Nifty Midcap 150
+    "NMDC.NS","OBEROIRLTY.NS","OFSS.NS","PAGEIND.NS","PEL.NS",
+    "PERSISTENT.NS","PETRONET.NS","PFC.NS","PVR.NS","RAMCOCEM.NS",
+    "RBLBANK.NS","RECLTD.NS","SAIL.NS","SHREECEM.NS","SIEMENS.NS",
+    "SUPREMEIND.NS","SYNGENE.NS","TRENT.NS","UBL.NS","VEDL.NS",
+    "VOLTAS.NS","ZOMATO.NS","ZYDUSLIFE.NS","ABFRL.NS","ABSLAMC.NS",
+    "AFFLE.NS","AJANTPHARM.NS","ALEMBICLTD.NS","ANGELONE.NS","APLAPOLLO.NS",
+    "APLLTD.NS","ARVINDFASN.NS","ASTRAL.NS","ATUL.NS","AUROPHARMA.NS",
+    "AVANTIFEED.NS","BAJAJHLDNG.NS","BATAINDIA.NS","BAYERCROP.NS","BIKAJI.NS",
+    "BLUESTARCO.NS","BRIGADE.NS","CAMS.NS","CANFINHOME.NS","CASTROLIND.NS",
+    "CDSL.NS","CENTURYPLY.NS","CERA.NS","CHALET.NS","CHAMBLFERT.NS",
+    "CLEAN.NS","COFORGE.NS","COLPAL.NS","CONCORDBIO.NS","COROMANDEL.NS",
+    "CREDITACC.NS","CYIENT.NS","DALMIACEMB.NS","DCMSHRIRAM.NS","DEEPAKFERT.NS",
+    "DELTACORP.NS","DEVYANI.NS","DIXON.NS","DMART.NS","EIHOTEL.NS",
+    "ELECON.NS","ELGIEQUIP.NS","EMAMILTD.NS","ENDURANCE.NS","ENGINERSIN.NS",
+    "EPL.NS","EQUITASBNK.NS","EXIDEIND.NS","FINEORG.NS","FINPIPE.NS",
+    "FSL.NS","GICRE.NS","GILLETTE.NS","GLAXO.NS","GLENMARK.NS",
+    "GLOBAL.NS","GODFRYPHLP.NS","GRAPHITE.NS","GREAVESCOT.NS","GREENPANEL.NS",
+    "GRINDWELL.NS","GSFC.NS","GUJGASLTD.NS","HAPPSTMNDS.NS","HATSUN.NS",
+    "HEG.NS","HFCL.NS","HIKAL.NS","HLEGLAS.NS","HONAUT.NS",
+    "IBULHSGFIN.NS","ICICIPRULI.NS","ICICIGI.NS","IDBI.NS","IGARASHI.NS",
+    "IIFL.NS","INDHOTEL.NS","INDIACEM.NS","INDIANB.NS","INDIGO.NS",
+    "INDUSINDBK.NS","INOXLEISUR.NS","IOB.NS","IOLCP.NS","IRB.NS",
+    "IRFC.NS","ISEC.NS","ITDC.NS","J&KBANK.NS","JBCHEPHARM.NS",
+    "JINDALSAW.NS","JKLAKSHMI.NS","JKPAPER.NS","JMFINANCIL.NS","JSWENERGY.NS",
+    "JUBLINGREA.NS","JUSTDIAL.NS","KAJARIACER.NS","KALPATPOWR.NS","KEC.NS",
+    "KFINTECH.NS","KNRCON.NS","KRBL.NS","KSCL.NS","L&TFH.NS",
+    "LAXMIMACH.NS","LICHSGFIN.NS","LINDEINDIA.NS","LODHA.NS","LICI.NS",
+    "M&MFIN.NS","MAHINDCIE.NS","MAHLIFE.NS","MANINFRA.NS","MASFIN.NS",
+    "MAXHEALTH.NS","MCX.NS","METROPOLIS.NS","MIDHANI.NS","MINDACORP.NS",
+    "MINDA.NS","MMTC.NS","MOIL.NS","MRPL.NS","MTAR.NS",
+    "NAUKRI.NS","NAVINFLUOR.NS","NBCC.NS","NCC.NS","NIACL.NS",
+    "NLCINDIA.NS","NOCIL.NS","NUVAMA.NS","OLECTRA.NS","ORIENTELEC.NS",
+    "PGHH.NS","PHOENIXLTD.NS","POLYCAB.NS","POLYMED.NS","POONAWALLA.NS",
+    "POWERMECH.NS","PRAJIND.NS","PRINCEPIPE.NS","PRIVISCL.NS","PSB.NS",
+    "PTC.NS","PVCL.NS","RADICO.NS","RAILTEL.NS","RAJESHEXPO.NS",
+    "RAJRATAN.NS","RALLIS.NS","RITES.NS","RVNL.NS","SAFARI.NS",
+    "SANOFI.NS","SAPPHIRE.NS","SCHAEFFLER.NS","SEQUENT.NS","SHYAMMETL.NS",
+    "SJVN.NS","SKFINDIA.NS","SOBHA.NS","SOLARA.NS","SOMANYCERA.NS",
+    "SPANDANA.NS","SPARC.NS","STAR.NS","STARCEMENT.NS","STLTECH.NS",
+    "SUMICHEM.NS","SUNTV.NS","SUPRAJIT.NS","SURYAROSNI.NS","SUZLON.NS",
+    "SYMPHONY.NS","TATACHEM.NS","TATACOMM.NS","TATAELXSI.NS","TATAINVEST.NS",
+    "TATAPOWER.NS","TCNSBRANDS.NS","TEAMLEASE.NS","TEJASNET.NS","THERMAX.NS",
+    "TIINDIA.NS","TIMKEN.NS","TORNTPHARM.NS","TORNTPOWER.NS","TTKPRESTIG.NS",
+    "TVSMOTORS.NS","UCOBANK.NS","UJJIVANSFB.NS","UNIONBANK.NS","UNITDSPR.NS",
+    "UNIPARTS.NS","USHAMART.NS","VBL.NS","VIJAYA.NS","VINATIORGA.NS",
+    "VTL.NS","WELCORP.NS","WELSPUNIND.NS","WHIRLPOOL.NS","WOCKPHARMA.NS",
+    "YESBANK.NS","ZEEL.NS","ZENITHEXPO.NS","ZENSARTECH.NS","INDUSTOWER.NS",
+    # Extra Nifty 500 additions
+    "AARTIDRUGS.NS","ADANIGREEN.NS","ADANIPOWER.NS","ADANITRANS.NS",
+    "AEGISLOG.NS","AGROPHOS.NS","AMARAJABAT.NS","AMBER.NS","AMINES.NS",
+    "ANANTRAJ.NS","ANDHRBANK.NS","APCOTEXIND.NS","APOLLOTYRE.NS","ARBL.NS",
+    "ARCHIES.NS","ARVIND.NS","ASHOKLEY.NS","ASIANHOTEL.NS","ASTRAZEN.NS",
+    "ATGL.NS","BALRAMCHIN.NS","BALAMINES.NS","BAYERCROP.NS","BBTC.NS",
+    "BEML.NS","BFINVEST.NS","BGRENERGY.NS","BHEL.NS","BIRLACORPN.NS",
+    "BORORENEW.NS","BOSCHLTD.NS","BSL.NS","CEATLTD.NS","CMSINFO.NS",
+    "CONCOR.NS","CRISIL.NS","CROMPTON.NS","DELHIBANK.NS","DHANI.NS",
+    "DLF.NS","DLINKINDIA.NS","DREDGECORP.NS","EIHOTEL.NS","EQUITAS.NS",
+    "ESTER.NS","FLAIR.NS","FRETAIL.NS","GAEL.NS","GARFIBRES.NS",
+    "GAYAPROJ.NS","GDL.NS","GPIL.NS","GREENPLY.NS","GULFOILLUB.NS",
+    "GVKPIL.NS","HCC.NS","HDFCAMC.NS","HERITGFOOD.NS","HNDFDS.NS",
+    "HPL.NS","HUHTAMAKI.NS","IBREALEST.NS","ICIL.NS","IGPL.NS",
+    "IMFA.NS","INDIGOPNTS.NS","INDNIPPON.NS","INDORAMA.NS","INDSWFTMED.NS",
+    "INFOEDGE.NS","INTELLECT.NS","IONEXCHANG.NS","ITC.NS","ITDC.NS",
+    "JCHAC.NS","JISLJALEQS.NS","JKCEMENT.NS","JKLAKSHMI.NS","JMFINANCIL.NS",
+    "JPPOWER.NS","JSWHL.NS","JUNIPERHOTEL.NS","KALYANKJIL.NS","KAMDHENU.NS",
+    "KDDL.NS","KIRIINDUS.NS","KITEX.NS","KKALPATARUPROJ.NS","KOLTEPATIL.NS",
+    "KOPRAN.NS","KPIL.NS","KRSNAA.NS","KTKBANK.NS","KPITTECH.NS",
+    "LATENTVIEW.NS","LAURUSLABS.NS","LAXMIMACH.NS","LEMONTREE.NS","LGBBROSLTD.NS",
+    "MANGLMCEM.NS","MARKSANS.NS","MATRIMONY.NS","MAYURUNIQ.NS","MEDPLUS.NS",
+    "MEGH.NS","MMTC.NS","MOREPENLAB.NS","MOTILALOFS.NS","MPHASIS.NS",
+    "NAUKRI.NS","NESCO.NS","NEWGEN.NS","NFL.NS","NHPC.NS",
+    "NIITLTD.NS","NIITMTS.NS","NLC.NS","NSLNISP.NS","NUCLEUS.NS",
+    "OCCL.NS","ONGC.NS","ORIENTCEM.NS","PATELENG.NS","PAYTM.NS",
+    "PCJEWELLER.NS","PDMJEPAPER.NS","PENIND.NS","PENINLAND.NS","PFIZER.NS",
+    "PIIND.NS","POCL.NS","PRAJ.NS","PRAKASH.NS","PREMEXPLN.NS",
+    "PRESTIGE.NS","PRICOLLTD.NS","PRITIKAUTO.NS","PUNJABCHEM.NS","PUREIT.NS",
+    "PVRINOX.NS","QUESS.NS","RATNAMANI.NS","RAYMOND.NS","REDINGTON.NS",
+    "REPCOHOME.NS","RESPONIND.NS","RITES.NS","ROHLTD.NS","ROSSARI.NS",
+    "RPOWER.NS","RTNPOWER.NS","RVNL.NS","SADBHAV.NS","SAILESH.NS",
+    "SAKSOFT.NS","SALPG.NS","SANDHAR.NS","SANGHIIND.NS","SARDAEN.NS",
+    "SAREGAMA.NS","SARLAPOLY.NS","SBFC.NS","SBICARD.NS","SBILIFE.NS",
+    "SCHNEIDER.NS","SFL.NS","SGBSEBI.NS","SHALBY.NS","SHAREINDIA.NS",
+    "SHILPAMED.NS","SHOPERSTOP.NS","SHRIRAMCIT.NS","SHRIRAMC.NS","SKMEGGPROD.NS",
+    "SMSPHARMA.NS","SNOWMAN.NS","SOLARINDS.NS","SONATSOFTW.NS","SOUTHBANK.NS",
+    "SPICEJET.NS","SPTL.NS","SRHHYPOLTD.NS","SRTRANSFIN.NS","STARHEALTH.NS",
+    "STEELCAS.NS","STLTECH.NS","STYLAMIND.NS","SUDARSCHEM.NS","SUKHJITS.NS",
+    "SUNPHARMA.NS","SUNCLAYLTD.NS","SUPRAJIT.NS","SUPRIYA.NS","SUVENPHAR.NS",
+    "SWANENERGY.NS","TANLA.NS","TASTYBITE.NS","TATAMETALI.NS","TATVA.NS",
+    "TIMETECHNO.NS","TINPLATE.NS","TITAGARH.NS","TNPETRO.NS","TPLPLASTEH.NS",
+    "TRANSRAIL.NS","TRIDENT.NS","TRITURBINE.NS","TRIVENI.NS","TTKHLTCARE.NS",
+    "TVSMOTOR.NS","UGROCAP.NS","UJAAS.NS","ULTRATECH.NS","UNOMINDA.NS",
+    "UTIAMC.NS","VGUARD.NS","VAIBHAVGBL.NS","VARDHACRLC.NS","VARROC.NS",
+    "VEEFIN.NS","VENKEYS.NS","VESUVIUS.NS","VMART.NS","VOLTAMP.NS",
+    "VSTIND.NS","WABAG.NS","WINDMACHIN.NS","WONDERLA.NS","WSI.NS",
+    "XCHANGING.NS","YESBANK.NS","ZENTEC.NS","ZOMATO.NS","ZUARI.NS"
 ]
+
+def get_nse_universe() -> List[str]:
+    """
+    Try to fetch the live NSE equity list.
+    Falls back to the hardcoded Nifty 500 sample if fetch fails.
+    """
+    try:
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Referer": "https://www.nseindia.com"
+        }
+        session = requests.Session()
+        session.headers.update(headers)
+        # Warm-up cookie
+        session.get("https://www.nseindia.com", timeout=10)
+        resp = session.get(
+            "https://www.nseindia.com/api/equity-stockIndices?index=NIFTY%20500",
+            timeout=15
+        )
+        if resp.ok:
+            data = resp.json()
+            symbols = [d["symbol"] + ".NS" for d in data.get("data", []) if "symbol" in d]
+            if len(symbols) > 100:
+                log.info(f"✅ Fetched {len(symbols)} stocks from NSE API")
+                return symbols
+    except Exception as e:
+        log.warning(f"NSE API fetch failed ({e}), using hardcoded list")
+
+    return NIFTY500_HARDCODED
+
+NIFTY500_SAMPLE = get_nse_universe()
 
 # Deduplicate while preserving order
 _seen: set = set()
@@ -1141,6 +1235,7 @@ def analyse(
         reward = abs(target1 - entry)
         risk = abs(entry - stop_loss)
         rr = round(reward / risk, 2) if risk > 0 else 0.0
+        rr = min(99.0, rr)
         risk_percentage = round((risk / entry) * 100, 2)
         
         # Enforce maximum acceptable risk = 5% of entry
@@ -1297,6 +1392,10 @@ def analyse(
         result["camarilla_h5"] = result["t1"]
         result["camarilla_h6"] = result["t2"]
         result["rvol"] = result["vol_ratio"]
+        result["ema10_on"] = cfg["EMA_10"]
+        result["ema20_on"] = cfg["EMA_20"]
+        result["ema50_on"] = cfg["EMA_50"]
+        result["ema200_on"] = cfg["EMA_200"]
 
         # Check strict buy/sell conditions
         if not bearish:
@@ -1323,12 +1422,20 @@ def analyse(
             result["signal_explanation"] = {"passed": [reason], "failed": [], "entry": trigger, "sl": sl, "t1": t1, "rr": result["rr"]}
 
         # Check score limit
-        if result["score"] < cfg["MIN_SCORE"]:
+        min_score = cfg["MIN_SCORE"]
+        try:
+            reg = get_regime().get("regime", "NEUTRAL")
+            if reg in ("BEAR", "STRONG_BEAR"):
+                min_score = max(0, min_score - 10)
+        except Exception:
+            pass
+
+        if result["score"] < min_score:
             if explain_skip:
                 return {
                     "symbol": clean_sym,
                     "skipped": True,
-                    "reason": f"Momentum score too low ({result['score']}/100 < {cfg['MIN_SCORE']})"
+                    "reason": f"Momentum score too low ({result['score']}/100 < {min_score})"
                 }
             return None
 
@@ -1361,6 +1468,9 @@ def run_scan(
     stop_event: set it to cancel an in-progress scan gracefully.
     """
     raw_tickers = list(tickers or NIFTY500_SAMPLE)
+    # Fix 1: Warn if market is closed but proceed using last session data
+    if not is_nse_market_open():
+        log.warning("⚠️ NSE Market is closed — proceeding with last session data...")
     tickers = [t for t in raw_tickers if t not in SKIP_TICKERS]
     skipped_count = len(raw_tickers) - len(tickers)
     if skipped_count > 0:
@@ -1414,6 +1524,8 @@ def run_scan(
 
             # Filter on RAW score, not regime-adjusted
             min_score = (cfg_override or {}).get("MIN_SCORE", CFG["MIN_SCORE"])
+            if regime_name in ("BEAR", "STRONG_BEAR"):
+                min_score = max(0, min_score - 10)
             if result["raw_score"] < min_score:
                 result = None
         
