@@ -681,7 +681,6 @@ def _download(ticker: str, retries: int = 3, use_cache_only: bool = False) -> Op
                 auto_adjust=True,
                 timeout=30,
             )
-            print(f"DEBUG {ticker}: df_len={len(df) if df is not None else 'None'}")
             if df is not None and not df.empty:
                 df = normalize_dataframe(df)
                 # Save to cache
@@ -959,7 +958,6 @@ def analyse(
             return None
 
         vol_ratio = volume / vol_avg
-        print(f"DEBUG {ticker}: vol_ratio={vol_ratio:.2f} mult={cfg['VOL_MULT']} pass={vol_ratio >= cfg['VOL_MULT']}")
 
         # ── Volume filter ──────────────────────────────────────
         if vol_ratio < cfg["VOL_MULT"]:
