@@ -82,8 +82,8 @@ def check_buy_signal(stock_data, market_regime):
     else:
         reasons_fail.append(f"Poor RR ({rr:.1f}:1 < 1.5 required)")
     
-    # CONDITION 6: Distance from entry
-    dist_pct = abs((close - entry) / entry * 100) if entry > 0 else 999.0
+    # CONDITION 6: Distance from entry (allow entries below trigger, cap at +2.0% above trigger)
+    dist_pct = ((close - entry) / entry * 100) if entry > 0 else 999.0
     if dist_pct <= 2.0:
         reasons_pass.append(f"Entry fresh ✓ ({dist_pct:.1f}% from trigger)")
     else:
