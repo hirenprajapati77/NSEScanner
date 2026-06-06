@@ -2212,8 +2212,8 @@ tbody tr:hover td:first-child {
       <option value="0.1">0.1x (Early Morning)</option>
       <option value="0.2">0.2x (Morning Scan)</option>
       <option value="0.5">0.5x (Early Session)</option>
-      <option value="1.0" selected>1.0x (Standard)</option>
-      <option value="1.5">1.5x</option>
+      <option value="1.0">1.0x (Standard)</option>
+      <option value="1.5" selected>1.5x</option>
       <option value="2">2x</option>
       <option value="2.5">2.5x</option>
       <option value="3">3x</option>
@@ -2226,9 +2226,9 @@ tbody tr:hover td:first-child {
     </select>
     <label style="margin-left:8px">Scan Mode</label>
     <select id="scanMode" onchange="savePrefs()">
-      <option value="bullish" selected>Bullish Scan</option>
+      <option value="bullish">Bullish Scan</option>
       <option value="bearish">Bearish Scan</option>
-      <option value="both">Both setups</option>
+      <option value="both" selected>Both setups</option>
     </select>
     <label style="margin-left:8px">Price Cap</label>
     <select id="minPrice" onchange="savePrefs()">
