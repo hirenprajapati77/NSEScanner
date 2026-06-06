@@ -2872,20 +2872,6 @@ function loadRegime() {
       window.niftyRegime = d.regime;
       applyRegimeScanMode(d.regime);
 
-      if (d.regime === 'STRONG_BEAR' || d.regime === 'BEAR') {
-        if (!emaReq[200]) {
-          emaReq[200] = true;
-          const chip = document.getElementById('c200');
-          const cb = chip && chip.querySelector('input');
-          if (cb) {
-            cb.checked = true;
-            chip.classList.add('on');
-          }
-          savePrefs();
-          render();
-        }
-      }
-
       const bearWarn = document.getElementById('bearWarning');
       if (bearWarn) {
         if (d.regime === 'STRONG_BEAR' || d.regime === 'BEAR') {
@@ -2987,7 +2973,7 @@ setInterval(loadFiiDii, 30 * 60 * 1000); // Refresh every 30 min
 
 function savePrefs(){
   try{
-    localStorage.setItem('nse_prefs_h',JSON.stringify({
+    localStorage.setItem('nse_prefs_h_v3',JSON.stringify({
       volDays: document.getElementById('volDays').value,
       volMult: document.getElementById('volMult').value,
       turnoverLimit: document.getElementById('turnoverLimit').value,
@@ -3003,7 +2989,7 @@ function savePrefs(){
 
 function loadPrefs(){
   try{
-    const p=JSON.parse(localStorage.getItem('nse_prefs_h')||'{}');
+    const p=JSON.parse(localStorage.getItem('nse_prefs_h_v3')||'{}');
     if(p.volDays) document.getElementById('volDays').value=p.volDays;
     if(p.volMult) document.getElementById('volMult').value=p.volMult;
     if(p.turnoverLimit) document.getElementById('turnoverLimit').value=p.turnoverLimit;
@@ -3235,7 +3221,7 @@ function renderHome() {
           <div style="display:flex;justify-content:space-between;align-items:center;">
             <div>
               <div style="font-size:8.5px;color:var(--text-muted)">LTP</div>
-              <div style="font-size:14px;font-weight:800;font-family:var(--font-mono)">${fmt(s.price)}</div>
+              <div style="font-size:14px;font-weight:800;font-family:var(--font-mono)">${fmt(s.price)}${marketClosed && !s.isMock ? ' <span style="font-size:8px;color:#d97706;font-weight:700">(prev close)</span>' : ''}</div>
             </div>
             <span style="font-size:8.5px;font-weight:800;padding:2px 7px;border-radius:4px;background:${stBg};color:${stColor};border:1px solid ${stBorder}">${stLabel}</span>
           </div>
@@ -4085,7 +4071,7 @@ function formatFreshness(scannedTime, scannedTimestamp, isMock) {
   if (!scannedTime) {
     const now = new Date();
     const timeStr = now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true });
-    return `<div style="font-size:9.5px;color:var(--text-muted)">Updated: ${timeStr}</div>`;
+    return `<div style="font-size:9.5px;color:${marketClosed ? '#d97706' : 'var(--text-muted)'}">Updated: ${timeStr}</div>`;
   }
   
   let displayTime = scannedTime;
@@ -4114,6 +4100,10 @@ function formatFreshness(scannedTime, scannedTimestamp, isMock) {
     }
   }
 
+  if (marketClosed) {
+    return `<div style="font-size:9.5px;color:#d97706;font-weight:700">Updated: ${displayTime}</div>`;
+  }
+
   if (diffMin > 120) {
     return `<div style="font-size:9.5px;color:#ef4444;font-weight:700">STALE ⚠️</div>`;
   } else if (diffMin > 30) {
@@ -4127,7 +4117,11 @@ function renderPriceCell(s) {
   if (s.hv_high && s.price > s.hv_high * 1.05) {
     return `<span style="color:var(--pro-sell);font-weight:700">⚠️ Data Error</span>`;
   }
-  return `₹${s.price.toLocaleString("en-IN", {minimumFractionDigits: 2})}`;
+  let priceStr = `₹${s.price.toLocaleString("en-IN", {minimumFractionDigits: 2})}`;
+  if (marketClosed && !s.isMock) {
+    priceStr += ` <span style="font-size:9px;color:#d97706;font-weight:700;margin-left:4px">(prev close)</span>`;
+  }
+  return priceStr;
 }
 
 // ── Main Render ───────────────────────────────────────────
@@ -4220,7 +4214,7 @@ function render(isTick = false){
           <div style="display:flex; align-items:end; justify-content:space-between; margin-top:auto">
             <div>
               <div style="font-family:var(--font-mono); font-size:10px; font-weight:800">
-                ${s.hv_high && s.price > s.hv_high * 1.05 ? '<span style="color:var(--pro-sell)">⚠️ Data Error</span>' : `₹${s.price.toFixed(1)}`}
+                ${s.hv_high && s.price > s.hv_high * 1.05 ? '<span style="color:var(--pro-sell)">⚠️ Data Error</span>' : `₹${s.price.toFixed(1)}${marketClosed && !s.isMock ? ' <span style="font-size:7.5px;color:#d97706;font-weight:700">(prev close)</span>' : ''}`}
               </div>
               <div style="font-size:9px; font-family:var(--font-mono); font-weight:800; color:${s.change >= 0 ? 'var(--pro-buy)' : 'var(--pro-sell)'}">${s.change >= 0 ? '+' : ''}${s.change.toFixed(2)}%</div>
             </div>
@@ -4330,7 +4324,7 @@ function render(isTick = false){
             </div>
           </div>
         </td>
-        <td style="text-align:right" class="price-main">${renderPriceCell(s)}${formatFreshness(s.scanned_time, s.scanned_timestamp, s.isMock)}</td>
+        <td style="text-align:right" class="price-main">${renderPriceCell(s)}${marketClosed && !s.isMock ? ' <span style="font-size:8px;color:#d97706;background:rgba(217,119,6,0.1);border:1px solid rgba(217,119,6,0.2);border-radius:4px;padding:1.5px 5px;font-weight:800;margin-left:4px;display:inline-block;vertical-align:middle">Prev Close</span>' : ''}${formatFreshness(s.scanned_time, s.scanned_timestamp, s.isMock)}</td>
         <td style="text-align:right; font-weight:800; font-family:var(--font-mono)" class="${s.change >= 0 ? 'up' : 'dn'}">
           ${s.change >= 0 ? '+' : ''}${s.change.toFixed(2)}%
         </td>
