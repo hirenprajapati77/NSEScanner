@@ -1153,16 +1153,27 @@ def analyse(
                     }
                 return None
 
-            # 3. Stricter bear market filter: if Nifty regime is BEAR/STRONG_BEAR, require RSI > 55 and Vol Spike > 2.0x
+            # 3. Bear market gate — FIX D: relaxed thresholds
+            # RSI floor: 35 (was 55) — only reject genuinely oversold stocks in bear market
+            # Volume gate: only apply during live market hours — after-hours scans use yesterday's data
             nifty_regime = get_regime().get("regime", "NEUTRAL").upper()
             if "BEAR" in nifty_regime:
-                if rsi <= 55 or vol_ratio <= 2.0:
-                    log.info(f"🚩 {ticker}: Excluded from BUY scan in bear market (requires RSI > 55 and Vol > 2.0x; found RSI {rsi:.2f}, Vol {vol_ratio:.2f}x)")
+                if rsi < 35:
+                    log.info(f"🚩 {ticker}: Excluded — genuinely oversold in bear market (RSI {rsi:.2f} < 35)")
                     if explain_skip:
                         return {
                             "symbol": ticker.replace(".NS", ""),
                             "skipped": True,
-                            "reason": f"Bear market regime filter failed (RSI {rsi:.2f} <= 55 or Vol {vol_ratio:.2f}x <= 2.0x)"
+                            "reason": f"Oversold in bear market (RSI {rsi:.2f} < 35)"
+                        }
+                    return None
+                if is_nse_market_open() and vol_ratio <= 2.0:
+                    log.info(f"🚩 {ticker}: Excluded — bear market live scan requires Vol > 2.0x (found {vol_ratio:.2f}x)")
+                    if explain_skip:
+                        return {
+                            "symbol": ticker.replace(".NS", ""),
+                            "skipped": True,
+                            "reason": f"Bear market live scan: low volume ({vol_ratio:.2f}x ≤ 2.0x required)"
                         }
                     return None
 
