@@ -2898,9 +2898,8 @@ function applyRegimeScanMode(regime) {
   const banner = document.getElementById('regime-mode-banner');
   if (!modeEl || !banner) return;
 
-  // Only auto-change the scan mode dropdown on FIRST load or on a REGIME CHANGE
-  // If user manually changed scan mode (saved in prefs) after first load, don't override
-  const shouldAutoSwitch = !_regimeScanModeAppliedOnce || (prevRegime !== null && prevRegime !== regime);
+  // Only auto-change the scan mode dropdown on a REGIME CHANGE (ignore on first load to respect default page options/preferences)
+  const shouldAutoSwitch = (prevRegime !== null && prevRegime !== regime);
   _regimeScanModeAppliedOnce = true;
 
   let bannerText = '', bannerColor = '', bannerBg = '';
