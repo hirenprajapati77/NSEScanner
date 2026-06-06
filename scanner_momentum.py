@@ -62,10 +62,11 @@ def check_buy_signal(stock_data, market_regime):
     
     # CONDITION 4: Relative Volume
     rvol = d.get('rvol', 0)
-    if rvol >= 1.8:
+    vol_req = d.get('vol_mult', 1.8)
+    if rvol >= vol_req:
         reasons_pass.append(f"RVOL ✓ ({rvol:.1f}x)")
     else:
-        reasons_fail.append(f"Low RVOL ({rvol:.1f}x < 1.8x required)")
+        reasons_fail.append(f"Low RVOL ({rvol:.1f}x < {vol_req:.1f}x required)")
     
     # CONDITION 5: Risk/Reward
     entry = h4

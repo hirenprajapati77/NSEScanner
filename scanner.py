@@ -1246,9 +1246,13 @@ def analyse(
         risk_percentage = round((risk / entry) * 100, 2)
         
         # Enforce maximum acceptable risk — FIX G: market-hours-aware thresholds
-        # Live scan: 8% cap (tighter, real-time discipline)
-        # After-hours scan: 10% cap (wider, using previous session data)
-        max_risk_pct = 8.0 if is_nse_market_open() else 10.0
+        # BEAR regime: 10% live / 12% after-hours
+        # Normal regime: 8% live / 10% after-hours
+        if nifty_regime in ("BEAR", "STRONG_BEAR"):
+            max_risk_pct = 10.0 if is_nse_market_open() else 12.0
+        else:
+            max_risk_pct = 8.0 if is_nse_market_open() else 10.0
+            
         if risk_percentage > max_risk_pct:
             log.info(f"🛡️ {ticker}: Rejected due to high risk ({risk_percentage}% > {max_risk_pct}%) — Capital preserved.")
             if explain_skip:
@@ -1259,8 +1263,8 @@ def analyse(
                 }
             return None
 
-        # Enforce minimum Risk/Reward floor — FIX H: bear regime uses 1.0 (tighter Camarilla targets in downtrends)
-        rr_floor = 1.0 if nifty_regime in ("BEAR", "STRONG_BEAR") else 1.5
+        # Enforce minimum Risk/Reward floor — FIX H: bear regime uses 0.4 (tighter Camarilla targets in downtrends)
+        rr_floor = 0.4 if nifty_regime in ("BEAR", "STRONG_BEAR") else 1.5
         if rr < rr_floor:
             log.info(f"🛡️ {ticker}: Rejected due to poor Risk/Reward ratio ({rr} < {rr_floor}) — Capital preserved.")
             if explain_skip:
@@ -1403,6 +1407,7 @@ def analyse(
         result["camarilla_h5"] = result["t1"]
         result["camarilla_h6"] = result["t2"]
         result["rvol"] = result["vol_ratio"]
+        result["vol_mult"] = cfg.get("VOL_MULT", 1.8)
         result["ema10_on"] = cfg["EMA_10"]
         result["ema20_on"] = cfg["EMA_20"]
         result["ema50_on"] = cfg["EMA_50"]
