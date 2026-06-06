@@ -4378,12 +4378,22 @@ function render(isTick = false){
       const sigBadge=(isBull?`<span class="sig-buy">BUY</span>`:`<span class="sig-sell">SELL</span>`) + bearBadge;
       
       let confColor = '#94a3b8'; let confBG = '#1f2937'; let confBorder = '1px solid #374151';
-      if (s.confidence === 'A+') {
-        confColor = '#fbbf24'; confBG = '#1e1b4b'; confBorder = '1px solid #eab308';
-      } else if (s.confidence === 'A') {
-        confColor = '#4ade80'; confBG = '#064e3b'; confBorder = '1px solid #047857';
-      } else if (s.confidence === 'B') {
-        confColor = '#60a5fa'; confBG = '#172554'; confBorder = '1px solid #1d4ed8';
+      if (isBull) {
+        if (s.confidence === 'A+') {
+          confColor = '#fbbf24'; confBG = '#1e1b4b'; confBorder = '1px solid #eab308';
+        } else if (s.confidence === 'A') {
+          confColor = '#4ade80'; confBG = '#064e3b'; confBorder = '1px solid #047857';
+        } else if (s.confidence === 'B') {
+          confColor = '#60a5fa'; confBG = '#172554'; confBorder = '1px solid #1d4ed8';
+        }
+      } else {
+        if (s.confidence === 'A+') {
+          confColor = '#f87171'; confBG = '#450a0a'; confBorder = '1px solid #ef4444';
+        } else if (s.confidence === 'A') {
+          confColor = '#fb923c'; confBG = '#431407'; confBorder = '1px solid #f97316';
+        } else if (s.confidence === 'B') {
+          confColor = '#f59e0b'; confBG = '#451a03'; confBorder = '1px solid #d97706';
+        }
       }
       const confBadge = `<span class="c-bull" style="background:${confBG}; color:${confColor}; border:${confBorder}; display:inline-block; padding:2px 8px">${s.confidence || 'B'}</span>`;
 
@@ -4414,7 +4424,7 @@ function render(isTick = false){
         } else if (Math.abs(displayDist) <= 5.0) {
           return `<span style="background:rgba(245,158,11,0.15); color:#fbbf24; font-weight:800; padding:3px 8px; border-radius:4px; border:1px solid rgba(245,158,11,0.3); font-size:9.5px">EXTENDED ⚠️</span>`;
         } else {
-          return `<span style="background:rgba(244,63,94,0.15); color:#f87171; font-weight:800; padding:3px 8px; border-radius:4px; border:1px solid rgba(244,63,94,0.3); font-size:9.5px">STALE ❌</span>`;
+          return `<span title="Price is more than 5% away from entry pivot — signal may be stale. Wait for price to return to entry zone." style="background:rgba(244,63,94,0.15); color:#f87171; font-weight:800; padding:3px 8px; border-radius:4px; border:1px solid rgba(244,63,94,0.3); font-size:9.5px; cursor:help">STALE ❌</span>`;
         }
       })();
 
