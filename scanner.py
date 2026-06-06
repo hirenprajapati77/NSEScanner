@@ -788,6 +788,8 @@ def analyse(
 
     try:
         use_cache_only = cfg.get("USE_CACHE_ONLY", False)
+        # Fetch Nifty market regime once at the top — used by multiple filters below
+        nifty_regime = get_regime().get("regime", "NEUTRAL").upper()
         df = _download(ticker, use_cache_only=use_cache_only)
         if df is None or df.empty or len(df) < min_len:
             if explain_skip:
@@ -1142,31 +1144,21 @@ def analyse(
                     }
                 return None
 
-            # 2. RSI filter: exclude if RSI < 45
-            if rsi < 45:
-                log.info(f"🚩 {ticker}: Excluded from BUY scan due to low RSI ({rsi:.2f} < 45)")
+            # 2. RSI filter — FIX F: flat floor of 35 (was 45)
+            # RSI 35-45 is normal in bear markets and downtrending stocks. Only reject truly broken stocks.
+            if rsi < 35:
+                log.info(f"🚩 {ticker}: Excluded from BUY scan — RSI too low ({rsi:.2f} < 35)")
                 if explain_skip:
                     return {
                         "symbol": ticker.replace(".NS", ""),
                         "skipped": True,
-                        "reason": f"Low RSI ({rsi:.2f} < 45)"
+                        "reason": f"RSI too low ({rsi:.2f} < 35)"
                     }
                 return None
 
             # 3. Bear market gate — FIX D: relaxed thresholds
-            # RSI floor: 35 (was 55) — only reject genuinely oversold stocks in bear market
-            # Volume gate: only apply during live market hours — after-hours scans use yesterday's data
-            nifty_regime = get_regime().get("regime", "NEUTRAL").upper()
+            # RSI floor already applied above. Only apply vol gate during live market hours.
             if "BEAR" in nifty_regime:
-                if rsi < 35:
-                    log.info(f"🚩 {ticker}: Excluded — genuinely oversold in bear market (RSI {rsi:.2f} < 35)")
-                    if explain_skip:
-                        return {
-                            "symbol": ticker.replace(".NS", ""),
-                            "skipped": True,
-                            "reason": f"Oversold in bear market (RSI {rsi:.2f} < 35)"
-                        }
-                    return None
                 if is_nse_market_open() and vol_ratio <= 2.0:
                     log.info(f"🚩 {ticker}: Excluded — bear market live scan requires Vol > 2.0x (found {vol_ratio:.2f}x)")
                     if explain_skip:
@@ -1252,25 +1244,29 @@ def analyse(
         rr = min(99.0, rr)
         risk_percentage = round((risk / entry) * 100, 2)
         
-        # Enforce maximum acceptable risk = 5% of entry
-        if risk_percentage > 5.0:
-            log.info(f"🛡️ {ticker}: Rejected due to high risk ({risk_percentage}% > 5%) — Capital preserved.")
+        # Enforce maximum acceptable risk — FIX G: market-hours-aware thresholds
+        # Live scan: 8% cap (tighter, real-time discipline)
+        # After-hours scan: 10% cap (wider, using previous session data)
+        max_risk_pct = 8.0 if is_nse_market_open() else 10.0
+        if risk_percentage > max_risk_pct:
+            log.info(f"🛡️ {ticker}: Rejected due to high risk ({risk_percentage}% > {max_risk_pct}%) — Capital preserved.")
             if explain_skip:
                 return {
                     "symbol": ticker.replace(".NS", ""),
                     "skipped": True,
-                    "reason": f"Risk too high ({risk_percentage}% > 5% of Pivot entry)"
+                    "reason": f"Risk too high ({risk_percentage}% > {max_risk_pct}% of Pivot entry)"
                 }
             return None
 
-        # Enforce minimum Risk/Reward floor limit = 1.5
-        if rr < 1.5:
-            log.info(f"🛡️ {ticker}: Rejected due to poor Risk/Reward ratio ({rr} < 1.5) — Capital preserved.")
+        # Enforce minimum Risk/Reward floor — FIX H: bear regime uses 1.0 (tighter Camarilla targets in downtrends)
+        rr_floor = 1.0 if nifty_regime in ("BEAR", "STRONG_BEAR") else 1.5
+        if rr < rr_floor:
+            log.info(f"🛡️ {ticker}: Rejected due to poor Risk/Reward ratio ({rr} < {rr_floor}) — Capital preserved.")
             if explain_skip:
                 return {
                     "symbol": ticker.replace(".NS", ""),
                     "skipped": True,
-                    "reason": f"Poor Risk/Reward ratio (1:{rr:.2f} < 1:1.5)"
+                    "reason": f"Poor Risk/Reward ratio (1:{rr:.2f} < 1:{rr_floor})"
                 }
             return None
 

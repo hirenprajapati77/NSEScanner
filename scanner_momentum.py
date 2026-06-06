@@ -8,17 +8,13 @@ def check_buy_signal(stock_data, market_regime):
     reasons_pass = []
     reasons_fail = []
     
-    # CONDITION 1: Market regime gate
+    # CONDITION 1: Market regime — NOTE: hard BEAR block removed (FIX E)
+    # Individual gates in scanner.py (RSI floor, vol gate, risk cap) already handle
+    # bear-market signal quality. A blanket block here prevents all after-hours setups.
     regime = market_regime.get('regime', 'NEUTRAL') if isinstance(market_regime, dict) else market_regime
-    if regime == 'BEAR':
-        return False, {
-            "passed": [],
-            "failed": ["BLOCKED: Bear market regime active"],
-            "entry": 0.0,
-            "sl": 0.0,
-            "t1": 0.0,
-            "rr": 0.0
-        }
+    # Log regime for transparency but do not block outright
+    if regime in ('BEAR', 'STRONG_BEAR'):
+        reasons_pass.append(f"Bear regime noted ({regime}) — individual filters apply")
     
     # CONDITION 2: Camarilla H4 breakout
     h4 = d.get('camarilla_h4', 0)
