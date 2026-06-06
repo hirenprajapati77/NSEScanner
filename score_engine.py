@@ -84,6 +84,27 @@ def calculate_score(stock_data, sector_data, market_data):
     
     total = sum(v['score'] for v in breakdown.values())
     
+    # Bear market entry bonus
+    regime = market_data.get('regime', 'NEUTRAL')
+    if regime in ("BEAR", "STRONG_BEAR"):
+        dist_entry = stock_data.get('dist_from_entry', 5.0)
+        bonus = 0
+        if dist_entry < 0:
+            bonus = 10
+        elif dist_entry <= 2.0:
+            bonus = 15
+        elif dist_entry <= 5.0:
+            bonus = 5
+            
+        if bonus > 0:
+            total += bonus
+            breakdown['bear_bonus'] = {
+                'score': bonus,
+                'max': 15,
+                'detail': f"Bear regime proximity bonus (+{bonus})"
+            }
+            total = min(total, 100) # cap at 100
+    
     return {
         'total': round(total, 1),
         'grade': 'A+' if total >= 90 else 'A' if total >= 80 else 'B' if total >= 70 else 'C',

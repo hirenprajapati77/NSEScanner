@@ -461,7 +461,7 @@ def get_nifty_returns() -> tuple:
     today_str = datetime.now().strftime("%Y-%m-%d")
     if "returns" in _NIFTY_CACHE and _NIFTY_CACHE.get("date") == today_str:
         cached = _NIFTY_CACHE["returns"]
-        return cached["20d"], cached["50d"]
+        return cached["20d"], cached["50d"], cached.get("63d", 0.0)
     
     try:
         with _YF_LOCK:
@@ -482,17 +482,19 @@ def get_nifty_returns() -> tuple:
             close_today = float(df["close"].iloc[-1])
             close_20d = float(df["close"].iloc[-20])
             close_50d = float(df["close"].iloc[-50])
+            close_63d = float(df["close"].iloc[-63]) if len(df) >= 63 else close_50d
             
             nifty_20d = (close_today - close_20d) / close_20d * 100
             nifty_50d = (close_today - close_50d) / close_50d * 100
+            nifty_63d = (close_today - close_63d) / close_63d * 100
             
-            _NIFTY_CACHE["returns"] = {"20d": nifty_20d, "50d": nifty_50d}
+            _NIFTY_CACHE["returns"] = {"20d": nifty_20d, "50d": nifty_50d, "63d": nifty_63d}
             _NIFTY_CACHE["date"] = today_str
-            log.info(f"📈 Nifty returns cached: 20d={nifty_20d:.2f}%, 50d={nifty_50d:.2f}%")
-            return nifty_20d, nifty_50d
+            log.info(f"📈 Nifty returns cached: 20d={nifty_20d:.2f}%, 50d={nifty_50d:.2f}%, 63d={nifty_63d:.2f}%")
+            return nifty_20d, nifty_50d, nifty_63d
     except Exception as exc:
         log.error(f"Error fetching Nifty Index returns: {exc}")
-    return 0.0, 0.0
+    return 0.0, 0.0, 0.0
 
 
 # ─────────────────────────────────────────────────────────────
@@ -1053,24 +1055,37 @@ def analyse(
                 }
             return None
 
-        range_52w = hv_high - hv_low
-        if range_52w <= 0:
+        cam_range = hv_high - hv_low
+        if cam_range < close * 0.05:  # 52w range less than 5% of price
             if explain_skip:
                 return {
                     "symbol": ticker.replace(".NS", ""),
                     "skipped": True,
-                    "reason": "52-week trading range is zero or negative"
+                    "reason": "Camarilla 52w range too narrow"
                 }
+            log.debug(f"{ticker}: Camarilla 52w range too narrow — skipping")
             return None
-
-        # ── Camarilla Levels & Math ────────────────────────────
-        pivot = round((hv_high + hv_low + close) / 3, 2)
-        entry = pivot  # Pivot is the institutional entry standard
 
         # Yesterday's daily range
         y_high = float(df.iloc[-2]["high"])
         y_low = float(df.iloc[-2]["low"])
         y_rng = y_high - y_low
+        
+        if y_rng < close * 0.005:  # Daily range less than 0.5% of price (bad tick/zero volume)
+            if explain_skip:
+                return {
+                    "symbol": ticker.replace(".NS", ""),
+                    "skipped": True,
+                    "reason": f"Yesterday's daily range too narrow ({y_rng:.2f})"
+                }
+            log.debug(f"{ticker}: Yesterday's daily range too narrow ({y_rng:.2f}) — skipping")
+            return None
+
+        # ── Camarilla Levels & Math ────────────────────────────
+        # Pivot MUST use yesterday's OHLC — same data as H3/H4/L3/L4
+        # Using 52wk high/low (hv_high/hv_low) puts pivot at wrong scale vs targets
+        pivot = round((y_high + y_low + prev_close) / 3, 2)
+        entry = pivot  # Pivot is the institutional entry standard
 
         cam = {
             "pivot": pivot,
@@ -1098,12 +1113,38 @@ def analyse(
         last_atr = float(df["atr"].iloc[-1]) if not pd.isna(df["atr"].iloc[-1]) else (close * 0.02)
         
         # ── High Priority Improvement #2: 20-Day and 50-Day Relative Strength vs Nifty ───
-        nifty_20d, nifty_50d = get_nifty_returns()
+        nifty_20d, nifty_50d, nifty_63d = get_nifty_returns()
         
-        # Stock 20-day return
-        close_20d = float(df["close"].iloc[-20]) if len(df) >= 20 else float(df["close"].iloc[0])
-        stock_ret_20d = (close - close_20d) / close_20d * 100
-        rs_pct = round(stock_ret_20d - nifty_20d, 2)
+        # Safe RS vs Nifty calculation (63-day)
+        rs_vs_nifty = 0.0
+        try:
+            if len(df) >= 63:
+                stock_now   = float(df["close"].iloc[-1])
+                stock_start = float(df["close"].iloc[-63])
+                if stock_start > 0:
+                    stock_ret = (stock_now / stock_start - 1) * 100
+                else:
+                    stock_ret = 0.0
+
+                nifty_df = yf.download("^NSEI", period="4mo",
+                             interval="1d", progress=False,
+                             auto_adjust=True)
+                if not nifty_df.empty and len(nifty_df) >= 63:
+                    nc = [c[0].lower() if isinstance(c,tuple) 
+                          else str(c).lower() for c in nifty_df.columns]
+                    nifty_df.columns = nc
+                    nifty_now   = float(nifty_df["close"].iloc[-1])
+                    nifty_start = float(nifty_df["close"].iloc[-63])
+                    if nifty_start > 0:
+                        nifty_ret = (nifty_now / nifty_start - 1) * 100
+                    else:
+                        nifty_ret = 0.0
+                    rs_vs_nifty = round(stock_ret - nifty_ret, 2)
+                    # Hard cap — realistic range is -30% to +30%
+                    rs_vs_nifty = max(-30.0, min(30.0, rs_vs_nifty))
+        except Exception:
+            rs_vs_nifty = 0.0
+        rs_pct = rs_vs_nifty
         
         # Stock 50-day return (trend confirmation filter)
         close_50d = float(df["close"].iloc[-50]) if len(df) >= 50 else float(df["close"].iloc[0])
@@ -1243,8 +1284,11 @@ def analyse(
         # Now re-calculate risk and reward with the adjusted stop-loss
         reward = abs(target1 - entry)
         risk = abs(entry - stop_loss)
-        rr = round(reward / risk, 2) if risk > 0 else 0.0
-        rr = min(99.0, rr)
+        if risk < entry * 0.005:
+            rr = 0.0
+        else:
+            rr = min(99.0, round(reward / risk, 2))
+            
         risk_percentage = round((risk / entry) * 100, 2)
         
         # Enforce maximum acceptable risk — FIX M: market-hours-aware thresholds (8% live / 20% after-hours)
@@ -1280,6 +1324,11 @@ def analyse(
                     "reason": f"Poor Risk/Reward ratio (1:{rr:.2f} < 1:{rr_floor})"
                 }
             return None
+
+        last_5_closes = df["close"].tail(5).tolist()
+        sparkline_data = []  # reset inside the per-stock loop
+        for price_val in last_5_closes:
+            sparkline_data.append(round(float(price_val), 2))
 
         result: Dict = {
             "symbol":            ticker.replace(".NS", ""),
@@ -1325,7 +1374,7 @@ def analyse(
             "rs_score":          rs_score,
             "turnover_score":    turnover_score,
             "risk_percentage":   risk_percentage,
-            "sparkline":         df["close"].tail(5).round(2).tolist(),  # Real 5-day price action closing points
+            "sparkline":         sparkline_data,
             **ema_checks,
         }
 
@@ -1339,20 +1388,27 @@ def analyse(
         sector_name = STOCK_SECTOR_MAP.get(clean_sym, "General Equity")
         result["sector"] = sector_name
 
-        # Calculate H5 & H6
+        # Trigger = H4 (breakout level), used for entry_status logic
         trigger = cam["H4"]
         sl = cam["L3"]
-        t1 = round((hv_high / hv_low) * close, 2) if hv_low else round(close * 1.05, 2)
-        t2 = round(t1 + 1.168 * (t1 - trigger), 2)
         dist_pct = abs((close - trigger) / trigger * 100) if trigger else 0.0
 
         # Step 13 columns
         result["cmp"] = close
         result["trigger"] = trigger
         result["sl"] = sl
-        result["t1"] = t1
-        result["t2"] = t2
-        result["rr"] = round((t1 - trigger) / (trigger - sl), 2) if (trigger - sl) > 0 else 0.0
+
+        # Recompute R:R cleanly from the actual entry/target/stop in result dict
+        # (Previous formula used (52wk_high/52wk_low)*price as target — completely wrong)
+        _entry  = result.get("entry",     close)
+        _target = result.get("target",    close)   # H3 for Bull, L3 for Bear
+        _stop   = result.get("stop_loss", close)   # L3 for Bull, H3 for Bear
+        _reward = abs(_target - _entry)
+        _risk   = abs(_entry  - _stop)
+        if _risk < _entry * 0.005:
+            result["rr"] = 0.0
+        else:
+            result["rr"] = min(15.0, round(_reward / _risk, 2))
         
         # Signal Age & Entry color helpers
         def _get_signal_age(scan_time):
@@ -1384,6 +1440,26 @@ def analyse(
         result["age_color"] = age_color
         result["entry_color"] = _get_entry_color(dist_pct)
         result["dist_pct"] = dist_pct
+        
+        # entry_status for uniform filtering
+        if not bearish:
+            if close < trigger * 0.99:
+                result["entry_status"] = "BELOW PIVOT"
+            elif dist_pct <= 2.0:
+                result["entry_status"] = "FRESH"
+            elif dist_pct <= 5.0:
+                result["entry_status"] = "EXTENDED"
+            else:
+                result["entry_status"] = "STALE"
+        else:
+            if close > trigger * 1.01:
+                result["entry_status"] = "BELOW PIVOT" # or above, but we use BELOW PIVOT globally for rejected entries
+            elif dist_pct <= 2.0:
+                result["entry_status"] = "FRESH"
+            elif dist_pct <= 5.0:
+                result["entry_status"] = "EXTENDED"
+            else:
+                result["entry_status"] = "STALE"
 
         # Fetch sector and market data for scoring
         sector_perf = get_sector_data_cached()
@@ -1441,7 +1517,7 @@ def analyse(
                         "reason": f"Momentum failed — L4 not broken"
                     }
                 return None
-            result["signal_explanation"] = {"passed": [reason], "failed": [], "entry": trigger, "sl": sl, "t1": t1, "rr": result["rr"]}
+            result["signal_explanation"] = {"passed": [reason], "failed": [], "entry": trigger, "sl": sl, "t1": result.get("target", trigger), "rr": result["rr"]}
 
         # Check score limit
         min_score = cfg["MIN_SCORE"]

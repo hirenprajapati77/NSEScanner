@@ -690,6 +690,14 @@ def export_csv():
     active_tab = request.args.get("active_tab", "camarilla")
     active_sub_tab = request.args.get("active_sub_tab", "all")
 
+    # EMA filter flags — 1 means "require price above this EMA", 0 means don't filter
+    ema_req = {
+        10:  request.args.get("ema10",  "0") == "1",
+        20:  request.args.get("ema20",  "0") == "1",
+        50:  request.args.get("ema50",  "0") == "1",
+        200: request.args.get("ema200", "0") == "1",
+    }
+
     rows = []
     for r in s["signals"]:
         price = r.get("price", 0.0)
@@ -703,6 +711,21 @@ def export_csv():
         if turnover_inr < turnover_limit:
             continue
         if price < min_price:
+            continue
+
+        # Apply EMA filters — skip stock if price is NOT above a required EMA
+        ema_vals = {
+            10:  r.get("ema10",  0.0) or 0.0,
+            20:  r.get("ema20",  0.0) or 0.0,
+            50:  r.get("ema50",  0.0) or 0.0,
+            200: r.get("ema200", 0.0) or 0.0,
+        }
+        ema_fail = False
+        for period, required in ema_req.items():
+            if required and ema_vals[period] > 0 and price <= ema_vals[period]:
+                ema_fail = True
+                break
+        if ema_fail:
             continue
 
         # Apply Tab Filters matching the frontend render() logic
@@ -738,11 +761,7 @@ def export_csv():
                 if entry_val <= 0 or abs(price - entry_val) / entry_val > 0.02:
                     continue
             elif active_sub_tab == 'fresh':
-                dist = r.get("dist_from_entry")
-                if dist is None:
-                    entry_val = r.get("entry", 0.0)
-                    dist = abs((price - entry_val) / entry_val * 100) if entry_val > 0 else 999.0
-                if abs(dist) > 5.0:
+                if r.get("entry_status") != "FRESH":
                     continue
             elif active_sub_tab == 'hv':
                 if r.get("days", 999) > 10:
@@ -3269,10 +3288,10 @@ function renderHome() {
   }
 
   function getStatusBadge3(s) {
-    const d = s.dist_from_entry !== undefined ? s.dist_from_entry : 0;
-    if (d < -2.0) return ['BELOW PIVOT 📉', '#818cf8', 'rgba(99,102,241,0.15)', 'rgba(99,102,241,0.3)'];
-    if (Math.abs(d) <= 2.0) return ['FRESH ✅', '#34d399', 'rgba(16,185,129,0.15)', 'rgba(16,185,129,0.3)'];
-    if (Math.abs(d) <= 5.0) return ['EXTENDED ⚠️', '#fbbf24', 'rgba(245,158,11,0.15)', 'rgba(245,158,11,0.3)'];
+    const status = s.entry_status || 'STALE';
+    if (status === 'BELOW_PIVOT') return ['BELOW PIVOT 📉', '#818cf8', 'rgba(99,102,241,0.15)', 'rgba(99,102,241,0.3)'];
+    if (status === 'FRESH') return ['FRESH ✅', '#34d399', 'rgba(16,185,129,0.15)', 'rgba(16,185,129,0.3)'];
+    if (status === 'EXTENDED') return ['EXTENDED ⚠️', '#fbbf24', 'rgba(245,158,11,0.15)', 'rgba(245,158,11,0.3)'];
     return ['STALE ❌', '#f87171', 'rgba(244,63,94,0.15)', 'rgba(244,63,94,0.3)'];
   }
 
@@ -3917,19 +3936,19 @@ function toggleSectorFilter(name) {
 
 // Offline Mock F&O Stocks dataset from the React ProTrader prototype
 const mockStocks = [
-  { symbol: "NMDC", name: "", price: 92.90, change: 3.0, vol_ratio: 4.2, rsi: 25, signal_type: "Bear", candle: "Bear", tf: "1h", sector: "Metals", score: 78, confidence: "B", entry: 95.0, dist_from_entry: -2.2, stop_loss: 97.24, target: 85.5, target2: 81.3, prevClose: 90.19, sparkline: [92.28, 92.28, 87.99, 92.37, 92.90] },
-  { symbol: "HDFCBANK", name: "HDFC Bank", price: 744.0, change: 2.4, vol_ratio: 2.3, rsi: 64, signal_type: "Bull", candle: "Bull", tf: "1h", sector: "Banking", score: 85, confidence: "A", entry: 740.0, dist_from_entry: 1.3, stop_loss: 725.0, target: 755.0, target2: 765.0, prevClose: 726.56, sparkline: [40, 42, 41, 45, 48, 52, 55] },
-  { symbol: "RELIANCE", name: "Reliance Ind.", price: 2981.0, change: 1.7, vol_ratio: 1.8, rsi: 58, signal_type: "Bull", candle: "Bull", tf: "4h", sector: "Energy", score: 78, confidence: "B", entry: 2950.0, dist_from_entry: 1.1, stop_loss: 2920.0, target: 3020.0, target2: 3050.0, prevClose: 2931.17, sparkline: [30, 32, 31, 35, 37, 39, 42] },
-  { symbol: "TMCV", name: "TMCV (Tata Motors)", price: 374.0, change: 3.1, vol_ratio: 3.5, rsi: 71, signal_type: "Bull", candle: "Bull", tf: "1h", sector: "Auto", score: 92, confidence: "A+", entry: 370.0, dist_from_entry: 2.7, stop_loss: 362.0, target: 382.0, target2: 390.0, prevClose: 362.75, sparkline: [50, 55, 53, 60, 65, 68, 72] },
-  { symbol: "INFY", name: "Infosys", price: 1823.7, change: 0.6, vol_ratio: 1.1, rsi: 54, signal_type: "Bull", candle: "Bull", tf: "4h", sector: "IT", score: 68, confidence: "B", entry: 1810.0, dist_from_entry: 0.8, stop_loss: 1795.0, target: 1845.0, target2: 1860.0, prevClose: 1812.82, sparkline: [44, 45, 44, 46, 47, 48, 49] },
-  { symbol: "SBIN", name: "SBI", price: 812.9, change: 2.8, vol_ratio: 2.9, rsi: 67, signal_type: "Bull", candle: "Bull", tf: "1h", sector: "Banking", score: 80, confidence: "B", entry: 800.0, dist_from_entry: 1.6, stop_loss: 788.0, target: 825.0, target2: 835.0, prevClose: 790.75, sparkline: [38, 40, 42, 45, 47, 50, 54] },
-  { symbol: "DRREDDY", name: "Dr. Reddy's", price: 5412.0, change: -1.2, vol_ratio: 0.8, rsi: 38, signal_type: "Bear", candle: "Bear", tf: "4h", sector: "Pharma", score: 35, confidence: "C", entry: 5450.0, dist_from_entry: -0.7, stop_loss: 5500.0, target: 5350.0, target2: 5300.0, prevClose: 5477.73, sparkline: [60, 58, 55, 52, 48, 45, 42] },
-  { symbol: "COALINDIA", name: "Coal India", price: 472.6, change: -0.8, vol_ratio: 1.2, rsi: 41, signal_type: "Bear", candle: "Bear", tf: "1h", sector: "Metals", score: 38, confidence: "C", entry: 475.0, dist_from_entry: -0.5, stop_loss: 480.0, target: 465.0, target2: 460.0, prevClose: 476.41, sparkline: [55, 52, 50, 47, 45, 43, 41] },
-  { symbol: "DLF", name: "DLF Ltd.", price: 892.1, change: 4.2, vol_ratio: 4.1, rsi: 76, signal_type: "Bull", candle: "Bull", tf: "1h", sector: "Realty", score: 95, confidence: "A+", entry: 870.0, dist_from_entry: 2.5, stop_loss: 855.0, target: 915.0, target2: 930.0, prevClose: 856.14, sparkline: [45, 50, 55, 62, 68, 75, 82] },
-  { symbol: "MARUTI", name: "Maruti Suzuki", price: 12450.0, change: 1.9, vol_ratio: 1.6, rsi: 61, signal_type: "Bull", candle: "Bull", tf: "4h", sector: "Auto", score: 72, confidence: "B", entry: 12350.0, dist_from_entry: 0.8, stop_loss: 12200.0, target: 12600.0, target2: 12700.0, prevClose: 12217.86, sparkline: [42, 44, 45, 47, 49, 51, 54] },
-  { symbol: "WIPRO", name: "Wipro", price: 548.3, change: -0.4, vol_ratio: 0.9, rsi: 46, signal_type: "Bear", candle: "Bear", tf: "4h", sector: "IT", score: 44, confidence: "C", entry: 550.0, dist_from_entry: -0.3, stop_loss: 555.0, target: 540.0, target2: 535.0, prevClose: 550.50, sparkline: [52, 50, 49, 48, 47, 46, 45] },
-  { symbol: "ADANIENT", name: "Adani Ent.", price: 2634.0, change: 2.6, vol_ratio: 2.7, rsi: 65, signal_type: "Bull", candle: "Bull", tf: "1h", sector: "Infra", score: 82, confidence: "B", entry: 2600.0, dist_from_entry: 1.3, stop_loss: 2560.0, target: 2680.0, target2: 2720.0, prevClose: 2567.25, sparkline: [36, 38, 40, 43, 46, 49, 53] },
-  { symbol: "ITC", name: "ITC Ltd.", price: 448.7, change: 0.2, vol_ratio: 1.0, rsi: 51, signal_type: "Bull", candle: "Bull", tf: "4h", sector: "FMCG", score: 55, confidence: "B", entry: 445.0, dist_from_entry: 0.8, stop_loss: 440.0, target: 455.0, target2: 460.0, prevClose: 447.80, sparkline: [48, 49, 48, 50, 49, 51, 50] }
+  { symbol: "NMDC", name: "", price: 92.90, change: 3.0, vol_ratio: 4.2, rsi: 25, signal_type: "Bear", candle: "Bear", tf: "1h", sector: "Metals", score: 78, confidence: "B", entry: 95.0, entry_status: 'STALE', stop_loss: 97.24, target: 85.5, target2: 81.3, prevClose: 90.19, sparkline: [92.28, 92.28, 87.99, 92.37, 92.90] },
+  { symbol: "HDFCBANK", name: "HDFC Bank", price: 744.0, change: 2.4, vol_ratio: 2.3, rsi: 64, signal_type: "Bull", candle: "Bull", tf: "1h", sector: "Banking", score: 85, confidence: "A", entry: 740.0, entry_status: 'FRESH', stop_loss: 725.0, target: 755.0, target2: 765.0, prevClose: 726.56, sparkline: [40, 42, 41, 45, 48, 52, 55] },
+  { symbol: "RELIANCE", name: "Reliance Ind.", price: 2981.0, change: 1.7, vol_ratio: 1.8, rsi: 58, signal_type: "Bull", candle: "Bull", tf: "4h", sector: "Energy", score: 78, confidence: "B", entry: 2950.0, entry_status: 'FRESH', stop_loss: 2920.0, target: 3020.0, target2: 3050.0, prevClose: 2931.17, sparkline: [30, 32, 31, 35, 37, 39, 42] },
+  { symbol: "TMCV", name: "TMCV (Tata Motors)", price: 374.0, change: 3.1, vol_ratio: 3.5, rsi: 71, signal_type: "Bull", candle: "Bull", tf: "1h", sector: "Auto", score: 92, confidence: "A+", entry: 370.0, entry_status: 'EXTENDED', stop_loss: 362.0, target: 382.0, target2: 390.0, prevClose: 362.75, sparkline: [50, 55, 53, 60, 65, 68, 72] },
+  { symbol: "INFY", name: "Infosys", price: 1823.7, change: 0.6, vol_ratio: 1.1, rsi: 54, signal_type: "Bull", candle: "Bull", tf: "4h", sector: "IT", score: 68, confidence: "B", entry: 1810.0, entry_status: 'FRESH', stop_loss: 1795.0, target: 1845.0, target2: 1860.0, prevClose: 1812.82, sparkline: [44, 45, 44, 46, 47, 48, 49] },
+  { symbol: "SBIN", name: "SBI", price: 812.9, change: 2.8, vol_ratio: 2.9, rsi: 67, signal_type: "Bull", candle: "Bull", tf: "1h", sector: "Banking", score: 80, confidence: "B", entry: 800.0, entry_status: 'EXTENDED', stop_loss: 788.0, target: 825.0, target2: 835.0, prevClose: 790.75, sparkline: [38, 40, 42, 45, 47, 50, 54] },
+  { symbol: "DRREDDY", name: "Dr. Reddy's", price: 5412.0, change: -1.2, vol_ratio: 0.8, rsi: 38, signal_type: "Bear", candle: "Bear", tf: "4h", sector: "Pharma", score: 35, confidence: "C", entry: 5450.0, entry_status: 'BELOW_PIVOT', stop_loss: 5500.0, target: 5350.0, target2: 5300.0, prevClose: 5477.73, sparkline: [60, 58, 55, 52, 48, 45, 42] },
+  { symbol: "COALINDIA", name: "Coal India", price: 472.6, change: -0.8, vol_ratio: 1.2, rsi: 41, signal_type: "Bear", candle: "Bear", tf: "1h", sector: "Metals", score: 38, confidence: "C", entry: 475.0, entry_status: 'BELOW_PIVOT', stop_loss: 480.0, target: 465.0, target2: 460.0, prevClose: 476.41, sparkline: [55, 52, 50, 47, 45, 43, 41] },
+  { symbol: "DLF", name: "DLF Ltd.", price: 892.1, change: 4.2, vol_ratio: 4.1, rsi: 76, signal_type: "Bull", candle: "Bull", tf: "1h", sector: "Realty", score: 95, confidence: "A+", entry: 870.0, entry_status: 'EXTENDED', stop_loss: 855.0, target: 915.0, target2: 930.0, prevClose: 856.14, sparkline: [45, 50, 55, 62, 68, 75, 82] },
+  { symbol: "MARUTI", name: "Maruti Suzuki", price: 12450.0, change: 1.9, vol_ratio: 1.6, rsi: 61, signal_type: "Bull", candle: "Bull", tf: "4h", sector: "Auto", score: 72, confidence: "B", entry: 12350.0, entry_status: 'FRESH', stop_loss: 12200.0, target: 12600.0, target2: 12700.0, prevClose: 12217.86, sparkline: [42, 44, 45, 47, 49, 51, 54] },
+  { symbol: "WIPRO", name: "Wipro", price: 548.3, change: -0.4, vol_ratio: 0.9, rsi: 46, signal_type: "Bear", candle: "Bear", tf: "4h", sector: "IT", score: 44, confidence: "C", entry: 550.0, entry_status: 'BELOW_PIVOT', stop_loss: 555.0, target: 540.0, target2: 535.0, prevClose: 550.50, sparkline: [52, 50, 49, 48, 47, 46, 45] },
+  { symbol: "ADANIENT", name: "Adani Ent.", price: 2634.0, change: 2.6, vol_ratio: 2.7, rsi: 65, signal_type: "Bull", candle: "Bull", tf: "1h", sector: "Infra", score: 82, confidence: "B", entry: 2600.0, entry_status: 'FRESH', stop_loss: 2560.0, target: 2680.0, target2: 2720.0, prevClose: 2567.25, sparkline: [36, 38, 40, 43, 46, 49, 53] },
+  { symbol: "ITC", name: "ITC Ltd.", price: 448.7, change: 0.2, vol_ratio: 1.0, rsi: 51, signal_type: "Bull", candle: "Bull", tf: "4h", sector: "FMCG", score: 55, confidence: "B", entry: 445.0, entry_status: 'FRESH', stop_loss: 440.0, target: 455.0, target2: 460.0, prevClose: 447.80, sparkline: [48, 49, 48, 50, 49, 51, 50] }
 ];
 
 // Pre-process signals
@@ -4252,7 +4271,7 @@ function render(isTick = false){
     else if(activeSubTab === 'bearish')   f = f.filter(s => s.signal_type === 'Bear' && s.candle === 'Bear');
     else if(activeSubTab === 'mixed')     f = f.filter(s => (s.signal_type === 'Bull' && s.candle === 'Bear') || (s.signal_type === 'Bear' && s.candle === 'Bull'));
     else if(activeSubTab === 'entry')     f = f.filter(s => Math.abs(s.price - s.entry) / s.entry <= 0.02);
-    else if(activeSubTab === 'fresh')     f = f.filter(s => Math.abs(s.dist_from_entry !== undefined ? s.dist_from_entry : (s.entry ? ((s.price - s.entry) / s.entry) * 100 : 0)) <= 5.0);
+    else if(activeSubTab === 'fresh')     f = f.filter(s => s.entry_status === 'FRESH');
     else if(activeSubTab === 'hv')        f = f.filter(s => s.days <= 10);
   } else if (activeTab === 'watchlist') {
     f = f.filter(s => watchlist.includes(s.symbol));
@@ -4907,8 +4926,13 @@ function exportCSV(){
   const minPrice = document.getElementById('minPrice') ? document.getElementById('minPrice').value : '50';
   const tab = typeof activeTab !== 'undefined' ? activeTab : 'camarilla';
   const subTab = typeof activeSubTab !== 'undefined' ? activeSubTab : 'all';
+  // Include EMA filter state so CSV matches exactly what the dashboard shows
+  const e10 = emaReq[10] ? '1' : '0';
+  const e20 = emaReq[20] ? '1' : '0';
+  const e50 = emaReq[50] ? '1' : '0';
+  const e200 = emaReq[200] ? '1' : '0';
   
-  window.location.href = `/export?vol_mult=${vm}&turnover_limit=${turnover}&min_price=${minPrice}&active_tab=${tab}&active_sub_tab=${subTab}`;
+  window.location.href = `/export?vol_mult=${vm}&turnover_limit=${turnover}&min_price=${minPrice}&active_tab=${tab}&active_sub_tab=${subTab}&ema10=${e10}&ema20=${e20}&ema50=${e50}&ema200=${e200}`;
 }
 
 function triggerAlerts(){
