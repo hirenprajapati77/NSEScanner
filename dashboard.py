@@ -3833,6 +3833,7 @@ function toggleSectorFilter(name) {
 
 // Offline Mock F&O Stocks dataset from the React ProTrader prototype
 const mockStocks = [
+  { symbol: "NMDC", name: "", price: 92.90, change: 3.0, vol_ratio: 4.2, rsi: 25, signal_type: "Bear", candle: "Bear", tf: "1h", sector: "Metals", score: 78, confidence: "B", entry: 95.0, dist_from_entry: -2.2, stop_loss: 97.24, target: 85.5, target2: 81.3, prevClose: 90.19, sparkline: [92.28, 92.28, 87.99, 92.37, 92.90] },
   { symbol: "HDFCBANK", name: "HDFC Bank", price: 744.0, change: 2.4, vol_ratio: 2.3, rsi: 64, signal_type: "Bull", candle: "Bull", tf: "1h", sector: "Banking", score: 85, confidence: "A", entry: 740.0, dist_from_entry: 1.3, stop_loss: 725.0, target: 755.0, target2: 765.0, prevClose: 726.56, sparkline: [40, 42, 41, 45, 48, 52, 55] },
   { symbol: "RELIANCE", name: "Reliance Ind.", price: 2981.0, change: 1.7, vol_ratio: 1.8, rsi: 58, signal_type: "Bull", candle: "Bull", tf: "4h", sector: "Energy", score: 78, confidence: "B", entry: 2950.0, dist_from_entry: 1.1, stop_loss: 2920.0, target: 3020.0, target2: 3050.0, prevClose: 2931.17, sparkline: [30, 32, 31, 35, 37, 39, 42] },
   { symbol: "TMCV", name: "TMCV (Tata Motors)", price: 374.0, change: 3.1, vol_ratio: 3.5, rsi: 71, signal_type: "Bull", candle: "Bull", tf: "1h", sector: "Auto", score: 92, confidence: "A+", entry: 370.0, dist_from_entry: 2.7, stop_loss: 362.0, target: 382.0, target2: 390.0, prevClose: 362.75, sparkline: [50, 55, 53, 60, 65, 68, 72] },
