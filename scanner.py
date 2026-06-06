@@ -1144,15 +1144,15 @@ def analyse(
                     }
                 return None
 
-            # 2. RSI filter — FIX F: flat floor of 35 (was 45)
-            # RSI 35-45 is normal in bear markets and downtrending stocks. Only reject truly broken stocks.
-            if rsi < 35:
-                log.info(f"🚩 {ticker}: Excluded from BUY scan — RSI too low ({rsi:.2f} < 35)")
+            # 2. RSI filter — FIX L: rsi_floor is 30 in BEAR regime, else 35
+            rsi_floor = 30 if nifty_regime in ("BEAR", "STRONG_BEAR") else 35
+            if rsi < rsi_floor:
+                log.info(f"🚩 {ticker}: Excluded from BUY scan — RSI too low ({rsi:.2f} < {rsi_floor})")
                 if explain_skip:
                     return {
                         "symbol": ticker.replace(".NS", ""),
                         "skipped": True,
-                        "reason": f"RSI too low ({rsi:.2f} < 35)"
+                        "reason": f"RSI too low ({rsi:.2f} < {rsi_floor})"
                     }
                 return None
 
@@ -1245,23 +1245,27 @@ def analyse(
         rr = min(99.0, rr)
         risk_percentage = round((risk / entry) * 100, 2)
         
-        # Enforce maximum acceptable risk — FIX G: market-hours-aware thresholds
-        # BEAR regime: 10% live / 12% after-hours
-        # Normal regime: 8% live / 10% after-hours
-        if nifty_regime in ("BEAR", "STRONG_BEAR"):
-            max_risk_pct = 10.0 if is_nse_market_open() else 12.0
+        # Enforce maximum acceptable risk — FIX M: market-hours-aware thresholds (8% live / 20% after-hours)
+        if is_nse_market_open():
+            if risk_percentage > 8.0:
+                log.info(f"🛡️ {ticker}: Rejected due to high risk ({risk_percentage}% > 8.0%) — Capital preserved.")
+                if explain_skip:
+                    return {
+                        "symbol": ticker.replace(".NS", ""),
+                        "skipped": True,
+                        "reason": f"Risk too high ({risk_percentage}% > 8.0% of Pivot entry)"
+                    }
+                return None
         else:
-            max_risk_pct = 8.0 if is_nse_market_open() else 10.0
-            
-        if risk_percentage > max_risk_pct:
-            log.info(f"🛡️ {ticker}: Rejected due to high risk ({risk_percentage}% > {max_risk_pct}%) — Capital preserved.")
-            if explain_skip:
-                return {
-                    "symbol": ticker.replace(".NS", ""),
-                    "skipped": True,
-                    "reason": f"Risk too high ({risk_percentage}% > {max_risk_pct}% of Pivot entry)"
-                }
-            return None
+            if risk_percentage > 20.0:
+                log.info(f"🛡️ {ticker}: Rejected due to high risk ({risk_percentage}% > 20.0%) — Capital preserved.")
+                if explain_skip:
+                    return {
+                        "symbol": ticker.replace(".NS", ""),
+                        "skipped": True,
+                        "reason": f"Risk too high ({risk_percentage}% > 20.0% of Pivot entry)"
+                    }
+                return None
 
         # Enforce minimum Risk/Reward floor — FIX H: bear regime uses 0.4 (tighter Camarilla targets in downtrends)
         rr_floor = 0.4 if nifty_regime in ("BEAR", "STRONG_BEAR") else 1.5
