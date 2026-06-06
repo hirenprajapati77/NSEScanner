@@ -3306,7 +3306,7 @@ function renderHome() {
             <div>
               <div style="font-size: 9px; color: var(--text-muted); font-weight: 700; text-transform: uppercase; letter-spacing: 0.8px;">Live Market Regime</div>
               <h1 style="color: ${regimeColor}; font-size: 24px; font-weight: 900; margin-top: 4px; display: flex; align-items: center; gap: 6px;">
-                ${document.getElementById('regimeEmoji')?.textContent || '⚖️'} ${document.getElementById('regimeLabel')?.textContent.replace(/.*?\s+/, '') || regime}
+                ${document.getElementById('regimeEmoji')?.textContent || '⚖️'} ${document.getElementById('regimeLabel')?.textContent.replace(/.*?\\s+/, '') || regime}
               </h1>
               <p style="font-size: 12px; color: var(--text-muted); margin-top: 6px; font-style: italic; max-width: 450px;">${regimeDescText}</p>
             </div>
