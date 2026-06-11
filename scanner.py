@@ -93,6 +93,10 @@ SKIP_TICKERS = {
     "PVR.NS",          # Merged with INOX — now PVRINOX.NS
     "DELTACORP.NS",    # Suspended
     "TEJASNET.NS",     # Often illiquid/suspended
+    "VEEFIN.NS",       # Delisted
+    "KALPATPOWR.NS",   # Timeout/Delisted
+    "L&TFH.NS",        # Timeout/Delisted
+    "UJAAS.NS",        # No data
 }
 
 
@@ -1496,8 +1500,12 @@ def analyse(
         result["camarilla_h4"] = result["cam"]["H4"]
         result["camarilla_l3"] = result["cam"]["L3"]
         result["camarilla_l4"] = result["cam"]["L4"]
-        result["camarilla_h5"] = result["target"]
-        result["camarilla_h6"] = result["target2"]
+        
+        # Calculate correct Camarilla H5 & H6 breakout targets using 52-week range scaling
+        h5_val = (hv_high / hv_low) * close if hv_low > 0 else close * 1.05
+        h6_val = h5_val + 1.168 * (h5_val - result["cam"]["H4"])
+        result["camarilla_h5"] = round(h5_val, 2)
+        result["camarilla_h6"] = round(h6_val, 2)
         result["rvol"] = result["vol_ratio"]
         result["vol_mult"] = cfg.get("VOL_MULT", 1.8)
         result["ema10_on"] = cfg["EMA_10"]
