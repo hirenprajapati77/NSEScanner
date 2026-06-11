@@ -25,7 +25,8 @@ from typing import Callable, Dict, List, Optional
 import pandas as pd
 import requests
 import yfinance as yf
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import concurrent.futures
+from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError as FuturesTimeoutError
 from regime import get_regime, adjust_score_for_regime
 from dotenv import load_dotenv
 from requests.adapters import HTTPAdapter
@@ -744,7 +745,7 @@ def fetch_with_timeout(
         future = ex.submit(analyse, ticker, bearish=bearish, cfg_override=cfg_override, explain_skip=explain_skip)
         try:
             return future.result(timeout=timeout)
-        except concurrent.futures.TimeoutError:
+        except FuturesTimeoutError:
             log.warning(f"⏱️ TIMEOUT: {ticker} skipped after {timeout}s")
             if explain_skip:
                 return {
@@ -1674,7 +1675,7 @@ def run_scan(
                         results.append(r)
                 except Exception:
                     pass
-        except concurrent.futures.TimeoutError:
+        except FuturesTimeoutError:
             log.warning("⏱️ ThreadPoolExecutor scan hit outer timeout limit!")
 
     # Force progress to 100% if deadline or timeout cut the scan short
