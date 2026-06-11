@@ -678,14 +678,15 @@ def _download(ticker: str, retries: int = 3, use_cache_only: bool = False) -> Op
 
     for attempt in range(retries):
         try:
-            df = yf.download(
-                ticker,
-                period="2y",
-                interval="1d",
-                progress=False,
-                auto_adjust=True,
-                timeout=30,
-            )
+            with _YF_LOCK:
+                df = yf.download(
+                    ticker,
+                    period="2y",
+                    interval="1d",
+                    progress=False,
+                    auto_adjust=True,
+                    timeout=30,
+                )
             if df is not None and not df.empty:
                 df = normalize_dataframe(df)
                 # Save to cache
@@ -826,15 +827,16 @@ def analyse(
         prev_close_fi = None   # fast_info previous_close — always accurate
 
         try:
-            fast = ticker_obj.fast_info
-            live_price    = fast.get('lastPrice') or fast.get('last_price')
-            prev_close_fi = fast.get('regularMarketPreviousClose') or fast.get('previousClose') or fast.get('previous_close')
-            year_high     = fast.get('yearHigh') or fast.get('year_high')
-            year_low      = fast.get('yearLow') or fast.get('year_low')
-            
-            day_high      = fast.get('dayHigh') or fast.get('day_high')
-            day_low       = fast.get('dayLow') or fast.get('day_low')
-            day_open      = fast.get('open')
+            with _YF_LOCK:
+                fast = ticker_obj.fast_info
+                live_price    = fast.get('lastPrice') or fast.get('last_price')
+                prev_close_fi = fast.get('regularMarketPreviousClose') or fast.get('previousClose') or fast.get('previous_close')
+                year_high     = fast.get('yearHigh') or fast.get('year_high')
+                year_low      = fast.get('yearLow') or fast.get('year_low')
+                
+                day_high      = fast.get('dayHigh') or fast.get('day_high')
+                day_low       = fast.get('dayLow') or fast.get('day_low')
+                day_open      = fast.get('open')
             
             if live_price is not None:
                 from datetime import date
@@ -872,17 +874,24 @@ def analyse(
         # This handles Yahoo Finance rate-limiting of fast_info during market hours.
         if live_price is None:
             try:
-                _df5 = yf.download(
-                    ticker, period="5d", interval="1d",
-                    progress=False, auto_adjust=True, timeout=15
-                )
+                with _YF_LOCK:
+                    _df5 = yf.download(
+                        ticker, period="5d", interval="1d",
+                        progress=False, auto_adjust=True, timeout=15
+                    )
                 if _df5 is not None and not _df5.empty:
                     if isinstance(_df5.columns[0], tuple):
                         _df5.columns = [c[0].lower() for c in _df5.columns]
                     else:
                         _df5.columns = [str(c).lower() for c in _df5.columns]
-                    _today_close = float(_df5["close"].iloc[-1])
-                    _today_prev  = float(_df5["close"].iloc[-2]) if len(_df5) >= 2 else None
+                    
+                    _close_col = _df5["close"]
+                    if isinstance(_close_col, pd.DataFrame):
+                        _today_close = float(_close_col.iloc[-1].iloc[0])
+                        _today_prev  = float(_close_col.iloc[-2].iloc[0]) if len(_df5) >= 2 else None
+                    else:
+                        _today_close = float(_close_col.iloc[-1])
+                        _today_prev  = float(_close_col.iloc[-2]) if len(_df5) >= 2 else None
                     # Only use if it looks like today's data
                     from datetime import date
                     if _df5.index[-1].date() >= date.today():
@@ -1487,8 +1496,8 @@ def analyse(
         result["camarilla_h4"] = result["cam"]["H4"]
         result["camarilla_l3"] = result["cam"]["L3"]
         result["camarilla_l4"] = result["cam"]["L4"]
-        result["camarilla_h5"] = result["t1"]
-        result["camarilla_h6"] = result["t2"]
+        result["camarilla_h5"] = result["target"]
+        result["camarilla_h6"] = result["target2"]
         result["rvol"] = result["vol_ratio"]
         result["vol_mult"] = cfg.get("VOL_MULT", 1.8)
         result["ema10_on"] = cfg["EMA_10"]

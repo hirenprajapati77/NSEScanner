@@ -239,10 +239,10 @@ def _do_scan(params: dict, scan_id: str) -> None:
     cfg_override = {
         "VOL_DAYS":       int(params.get("vol_days", CFG["VOL_DAYS"])),
         "VOL_MULT":       float(params.get("vol_mult", CFG["VOL_MULT"])),
-        "EMA_10":         bool(params.get("ema10", True)),
-        "EMA_20":         bool(params.get("ema20", True)),
-        "EMA_50":         bool(params.get("ema50", True)),
-        "EMA_200":        bool(params.get("ema200", True)),
+        "EMA_10":         bool(params.get("ema10", CFG["EMA_10"])),
+        "EMA_20":         bool(params.get("ema20", CFG["EMA_20"])),
+        "EMA_50":         bool(params.get("ema50", CFG["EMA_50"])),
+        "EMA_200":        bool(params.get("ema200", CFG["EMA_200"])),
         "TG_TOKEN":       params.get("tg_token",     _load_config().get("tg_token",    "")),
         "TG_CHAT_ID":     params.get("tg_chat_id",   _load_config().get("tg_chat_id",  "")),
         "TWILIO_SID":     params.get("twilio_sid",   _load_config().get("twilio_sid",  "")),
@@ -251,6 +251,8 @@ def _do_scan(params: dict, scan_id: str) -> None:
         "TURNOVER_LIMIT": float(params.get("turnover_limit", CFG["TURNOVER_LIMIT"])),
         "USE_CACHE_ONLY": bool(params.get("use_cache", False)),
         "MIN_PRICE":      float(params.get("min_price", 50.0)),
+        "MIN_SCORE":      int(params.get("min_score", CFG["MIN_SCORE"])),
+        "MAX_52W_AGE":    int(params.get("max_52w_age", CFG["MAX_52W_AGE"])),
     }
 
     scan_mode = params.get("scan_mode", "bullish")   # bullish | bearish | both
