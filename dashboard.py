@@ -4781,8 +4781,9 @@ function updateProgress(p){
   const fill=document.getElementById('progFill');
   if (cur === 0) {
     fill.classList.add('waking');
-    document.getElementById('progPct').textContent = 'Connecting…';
-    document.getElementById('progStatus').textContent = `Connecting to scanner…`;
+    const isPrefetch = p.ticker && p.ticker.includes('Prefetching');
+    document.getElementById('progPct').textContent = isPrefetch ? 'Prefetch…' : 'Connecting…';
+    document.getElementById('progStatus').textContent = p.ticker || `Connecting to scanner…`;
   } else {
     fill.classList.remove('waking');
     fill.style.width=pctV+'%';

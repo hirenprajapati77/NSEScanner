@@ -821,15 +821,19 @@ def fetch_with_timeout(
             return None
 
 
-def prefetch_batch(tickers: list, period="2y") -> dict:
+def prefetch_batch(tickers: list, period="2y", progress_cb: Optional[Callable] = None) -> dict:
     """Download tickers in batches of 50 concurrently."""
     cache = {}
     batch_size = 50
     batches = [tickers[i:i+batch_size] for i in range(0, len(tickers), batch_size)]
     
     cache_lock = threading.Lock()
+    total_batches = len(batches)
+    completed_batches = 0
+    completed_lock = threading.Lock()
     
     def _download_batch(batch_idx_and_batch):
+        nonlocal completed_batches
         idx, batch = batch_idx_and_batch
         try:
             with _YF_SEMAPHORE:
@@ -858,12 +862,23 @@ def prefetch_batch(tickers: list, period="2y") -> dict:
             with cache_lock:
                 cache.update(local_cache)
                 
+            with completed_lock:
+                completed_batches += 1
+                curr_comp = completed_batches
+                
             log.info(f"Batch {idx+1}: {len(batch)} stocks prefetched")
+            if progress_cb:
+                progress_cb(0, len(tickers), f"⚡ Prefetching batch {curr_comp}/{total_batches}...")
         except Exception as e:
             log.warning(f"Batch {idx+1} prefetch failed: {e}")
             with cache_lock:
                 for ticker in batch:
                     cache[ticker] = None
+            with completed_lock:
+                completed_batches += 1
+                curr_comp = completed_batches
+            if progress_cb:
+                progress_cb(0, len(tickers), f"⚡ Prefetching batch {curr_comp}/{total_batches}...")
 
     with ThreadPoolExecutor(max_workers=5) as ex:
         ex.map(_download_batch, list(enumerate(batches)))
@@ -1687,7 +1702,7 @@ def run_scan(
     # ⚡ Prefetching batch data...
     log.info("⚡ Prefetching batch data...")
     prefetch_start = time.time()
-    data_cache = prefetch_batch(tickers)
+    data_cache = prefetch_batch(tickers, progress_cb=progress_cb)
     log.info(f"Prefetch done in {time.time()-prefetch_start:.1f}s")
     cfg_override["_data_cache"] = data_cache
 
