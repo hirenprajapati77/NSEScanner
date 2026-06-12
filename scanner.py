@@ -126,7 +126,7 @@ def _make_session() -> requests.Session:
 
 
 _SESSION = _make_session()
-_YF_LOCK = threading.Lock()
+_YF_SEMAPHORE = threading.Semaphore(5)  # max 5 concurrent YF requests
 
 
 # ─────────────────────────────────────────────────────────────
@@ -469,7 +469,7 @@ def get_nifty_returns() -> tuple:
         return cached["20d"], cached["50d"], cached.get("63d", 0.0)
     
     try:
-        with _YF_LOCK:
+        with _YF_SEMAPHORE:
             df = yf.download(
                 "^NSEI",
                 period="6mo",
@@ -682,7 +682,7 @@ def _download(ticker: str, retries: int = 3, use_cache_only: bool = False) -> Op
 
     for attempt in range(retries):
         try:
-            with _YF_LOCK:
+            with _YF_SEMAPHORE:
                 df = yf.download(
                     ticker,
                     period="2y",
@@ -794,7 +794,7 @@ def analyse(
     cfg      = {**CFG, **(cfg_override or {})}
     vol_days = cfg["VOL_DAYS"]
     hv_days  = cfg["HV_DAYS"]
-    min_len  = max(210, vol_days + 10, hv_days + 5)
+    min_len  = max(260, vol_days + 10, hv_days + 5)
 
     try:
         use_cache_only = cfg.get("USE_CACHE_ONLY", False)
@@ -831,7 +831,7 @@ def analyse(
         prev_close_fi = None   # fast_info previous_close — always accurate
 
         try:
-            with _YF_LOCK:
+            with _YF_SEMAPHORE:
                 fast = ticker_obj.fast_info
                 live_price    = fast.get('lastPrice') or fast.get('last_price')
                 prev_close_fi = fast.get('regularMarketPreviousClose') or fast.get('previousClose') or fast.get('previous_close')
@@ -878,7 +878,7 @@ def analyse(
         # This handles Yahoo Finance rate-limiting of fast_info during market hours.
         if live_price is None:
             try:
-                with _YF_LOCK:
+                with _YF_SEMAPHORE:
                     _df5 = yf.download(
                         ticker, period="5d", interval="1d",
                         progress=False, auto_adjust=True, timeout=15
@@ -1583,6 +1583,7 @@ def run_scan(
     progress_cb(current, total, ticker, eta_seconds) is called after each ticker.
     stop_event: set it to cancel an in-progress scan gracefully.
     """
+    scan_start = time.time()
     cfg_override = dict(cfg_override or {})
     raw_tickers = list(tickers or NIFTY500_SAMPLE)
     # Fix 1: Warn if market is closed but proceed using last session data
@@ -1712,7 +1713,7 @@ def run_scan(
         cfg_override.setdefault("rs_50d_floor", -10.0)
         log.info(f"🐻 Bear regime detected — loosening RS 50d floor to {cfg_override['rs_50d_floor']:.1f}%")
 
-    with ThreadPoolExecutor(max_workers=workers) as pool:
+    with ThreadPoolExecutor(max_workers=10) as pool:
         futures = {pool.submit(_task, t): t for t in tickers}
         try:
             for fut in as_completed(futures, timeout=scan_deadline + 10):
@@ -1782,9 +1783,15 @@ def run_scan(
         except Exception as exc:
             log.error(f"Error logging signal history to SQLite: {exc}")
 
+    elapsed = time.time() - scan_start
+    log.info(f"⚡ Scan completed: {len(results)} signals "
+             f"from {len(tickers)} stocks in "
+             f"{elapsed/60:.1f} min ({elapsed:.0f}s)")
+
     return {
         "signals":     results,
         "regime":      regime_data,
+        "duration":    elapsed,
     }
 
 

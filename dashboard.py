@@ -235,6 +235,7 @@ init_db()
 def _do_scan(params: dict, scan_id: str) -> None:
     """Runs in a background thread. Populates thread-safe _state as it progresses."""
     global _scan_thread
+    scan_start = time.time()
 
     cfg_override = {
         "VOL_DAYS":       int(params.get("vol_days", CFG["VOL_DAYS"])),
@@ -307,10 +308,12 @@ def _do_scan(params: dict, scan_id: str) -> None:
         if not _stop_event.is_set():
             save_csv(all_signals)
             now   = datetime.now().strftime("%d %b %Y %H:%M")
+            elapsed = time.time() - scan_start
+            duration_str = f"{elapsed/60:.1f}m / {elapsed:.0f}s"
             if len(all_signals) > 0:
                 _update_state(
                     signals=all_signals,
-                    last_scan=now,
+                    last_scan=f"{now} ({duration_str})",
                     scanning=False,
                     scan_id=None,
                     regime=regime_data,
@@ -322,7 +325,7 @@ def _do_scan(params: dict, scan_id: str) -> None:
                 import logging
                 logging.getLogger("NSEScanner").warning("Scan returned 0 signals — keeping previous results")
                 _update_state(
-                    last_scan=now + " (0 new)",
+                    last_scan=f"{now} (0 new in {duration_str})",
                     scanning=False,
                     scan_id=None,
                     regime=regime_data,
