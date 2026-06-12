@@ -1699,12 +1699,15 @@ def run_scan(
     if skipped_count > 0:
         log.info(f"⏭️ Skipped {skipped_count} known bad/delisted tickers before scanning.")
 
-    # ⚡ Prefetching batch data...
-    log.info("⚡ Prefetching batch data...")
-    prefetch_start = time.time()
-    data_cache = prefetch_batch(tickers, progress_cb=progress_cb)
-    log.info(f"Prefetch done in {time.time()-prefetch_start:.1f}s")
-    cfg_override["_data_cache"] = data_cache
+    if "_data_cache" in cfg_override and cfg_override["_data_cache"]:
+        log.info("⚡ Using pre-cached data for scan.")
+        data_cache = cfg_override["_data_cache"]
+    else:
+        log.info("⚡ Prefetching batch data...")
+        prefetch_start = time.time()
+        data_cache = prefetch_batch(tickers, progress_cb=progress_cb)
+        log.info(f"Prefetch done in {time.time()-prefetch_start:.1f}s")
+        cfg_override["_data_cache"] = data_cache
 
     total   = len(tickers)
     results: List[Dict] = []
