@@ -865,7 +865,7 @@ def prefetch_batch(tickers: list, period="2y") -> dict:
                 for ticker in batch:
                     cache[ticker] = None
 
-    with ThreadPoolExecutor(max_workers=3) as ex:
+    with ThreadPoolExecutor(max_workers=5) as ex:
         ex.map(_download_batch, list(enumerate(batches)))
         
     return cache
