@@ -770,6 +770,37 @@ def fetch_with_timeout(
             return None
 
 
+def prefetch_batch(tickers: list, period="2y") -> dict:
+    """Download up to 50 tickers in one API call."""
+    cache = {}
+    batch_size = 50
+    for i in range(0, len(tickers), batch_size):
+        batch = tickers[i:i+batch_size]
+        try:
+            with _YF_SEMAPHORE:
+                data = yf.download(
+                    batch, period=period, interval="1d",
+                    progress=False, auto_adjust=True,
+                    group_by="ticker", threads=True
+                )
+            for ticker in batch:
+                try:
+                    if isinstance(data.columns, pd.MultiIndex):
+                        if ticker in data.columns.levels[0]:
+                            cache[ticker] = data[ticker].dropna()
+                        else:
+                            cache[ticker] = data.dropna()
+                    else:
+                        cache[ticker] = data.dropna()
+                except Exception:
+                    cache[ticker] = None
+            log.info(f"Batch {i//batch_size+1}: "
+                     f"{len(batch)} stocks prefetched")
+        except Exception as e:
+            log.warning(f"Batch prefetch failed: {e}")
+    return cache
+
+
 def analyse(
     ticker: str,
     bearish: bool = False,
@@ -800,7 +831,20 @@ def analyse(
         use_cache_only = cfg.get("USE_CACHE_ONLY", False)
         # Fetch Nifty market regime once at the top — used by multiple filters below
         nifty_regime = get_regime().get("regime", "NEUTRAL").upper()
-        df = _download(ticker, use_cache_only=use_cache_only)
+        
+        cached = (cfg_override or {}).get("_data_cache", {})
+        df = cached.get(ticker)
+        if df is None or df.empty:
+            df = _download(ticker, use_cache_only=use_cache_only)
+        else:
+            df = normalize_dataframe(df)
+            try:
+                # Save to local CSV cache
+                cache_path = os.path.join(CACHE_DIR, f"{ticker}.csv")
+                df.to_csv(cache_path)
+            except Exception:
+                pass
+
         if df is None or df.empty or len(df) < min_len:
             if explain_skip:
                 return {
@@ -1629,6 +1673,13 @@ def run_scan(
     skipped_count = len(raw_tickers) - len(tickers)
     if skipped_count > 0:
         log.info(f"⏭️ Skipped {skipped_count} known bad/delisted tickers before scanning.")
+
+    # ⚡ Prefetching batch data...
+    log.info("⚡ Prefetching batch data...")
+    prefetch_start = time.time()
+    data_cache = prefetch_batch(tickers)
+    log.info(f"Prefetch done in {time.time()-prefetch_start:.1f}s")
+    cfg_override["_data_cache"] = data_cache
 
     total   = len(tickers)
     results: List[Dict] = []
