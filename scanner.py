@@ -1594,6 +1594,36 @@ def run_scan(
                     f"{orig_vol_mult} to {effective_vol_mult} "
                     f"for after-hours scan")
         cfg_override["VOL_MULT"] = effective_vol_mult
+
+    # Dynamic VOL_MULT adjustments for market hours based on session timing
+    if is_nse_market_open():
+        IST = timezone(timedelta(hours=5, minutes=30))
+        now = datetime.now(IST)
+        market_open = now.replace(hour=9, minute=15)
+        minutes_elapsed = (now - market_open).seconds // 60
+        
+        orig_mult = float(cfg_override.get("VOL_MULT", CFG["VOL_MULT"]))
+        
+        if minutes_elapsed < 30:      # 9:15–9:45
+            effective = min(orig_mult, 0.2)
+            reason = "First 30 min"
+        elif minutes_elapsed < 75:    # 9:45–10:30
+            effective = min(orig_mult, 0.4)
+            reason = "Early session"
+        elif minutes_elapsed < 150:   # 10:30–12:00
+            effective = min(orig_mult, 0.7)
+            reason = "Mid morning"
+        elif minutes_elapsed < 240:   # 12:00–13:30
+            effective = min(orig_mult, 1.0)
+            reason = "Midday"
+        else:                          # 13:30–15:30
+            effective = orig_mult      # full filter applies
+            reason = "Afternoon"
+        
+        if effective < orig_mult:
+            log.info(f"⏰ {reason} — VOL_MULT adjusted "
+                     f"{orig_mult}x → {effective}x")
+            cfg_override["VOL_MULT"] = effective
     tickers = [t for t in raw_tickers if t not in SKIP_TICKERS]
     skipped_count = len(raw_tickers) - len(tickers)
     if skipped_count > 0:

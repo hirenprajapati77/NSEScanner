@@ -581,7 +581,7 @@ def _fetch_sector_rotation():
                         change = round((l - p) / p * 100, 2)
         except Exception:
             change = 0.0
-        trend    = "up" if change > 0.4 else "down" if change < -0.4 else "neutral"
+        trend    = "up" if change >= 2.0 else "down" if change <= -2.0 else "neutral"
         strength = min(100, max(0, int(50 + change * 10)))
         result.append({"name": name, "change": change,
                         "trend": trend, "strength": strength})
@@ -2462,7 +2462,7 @@ tbody tr:hover td:first-child {
         <div class="widget-header">
           <div class="w-2.5 h-2.5 rounded-full bg-orange-500 animate-pulse"></div>
           <span>Sector Rotation Momentum</span>
-          <span id="sectorDataSource" style="display:none;margin-left:auto;font-size:9px;font-weight:600;letter-spacing:.5px;color:var(--pro-buy);background:rgba(16,185,129,.12);padding:2px 7px;border-radius:20px;border:1px solid rgba(16,185,129,.25)">⚡ LIVE · Yahoo Finance</span>
+          <span id="sectorDataSource" style="display:none;margin-left:auto;font-size:9px;font-weight:600;letter-spacing:.5px;color:var(--pro-buy);background:rgba(16,185,129,.12);padding:2px 7px;border-radius:20px;border:1px solid rgba(16,185,129,.25)">⚡ LIVE</span>
         </div>
         <div class="heatmap-grid" id="heatmapGrid">
           <!-- Populated dynamically -->
@@ -2840,9 +2840,22 @@ function fetchSectorRotation() {
             </button>`;
           }).join('');
         }
-        // Show LIVE badge
+        // Show LIVE/CLOSED badge
         const sectorLabel = document.getElementById('sectorDataSource');
-        if (sectorLabel) sectorLabel.style.display = 'inline';
+        if (sectorLabel) {
+          sectorLabel.style.display = 'inline';
+          if (marketClosed) {
+            sectorLabel.innerHTML = 'LAST SESSION';
+            sectorLabel.style.color = '#d97706';
+            sectorLabel.style.background = 'rgba(217, 119, 6, 0.12)';
+            sectorLabel.style.borderColor = 'rgba(217, 119, 6, 0.25)';
+          } else {
+            sectorLabel.innerHTML = '⚡ LIVE';
+            sectorLabel.style.color = 'var(--pro-buy)';
+            sectorLabel.style.background = 'rgba(16,185,129,.12)';
+            sectorLabel.style.borderColor = 'rgba(16,185,129,.25)';
+          }
+        }
         // Show freshness timestamp
         const timeEl = document.getElementById('sectorFetchTime');
         if (timeEl && fetchedTime) {
@@ -5008,6 +5021,20 @@ function checkMarketStatus(){
     .then(r=>r.json())
     .then(d=>{
       marketClosed = !d.is_open;
+      const sectorLabel = document.getElementById('sectorDataSource');
+      if (sectorLabel) {
+        if (marketClosed) {
+          sectorLabel.innerHTML = 'LAST SESSION';
+          sectorLabel.style.color = '#d97706';
+          sectorLabel.style.background = 'rgba(217, 119, 6, 0.12)';
+          sectorLabel.style.borderColor = 'rgba(217, 119, 6, 0.25)';
+        } else {
+          sectorLabel.innerHTML = '⚡ LIVE';
+          sectorLabel.style.color = 'var(--pro-buy)';
+          sectorLabel.style.background = 'rgba(16,185,129,.12)';
+          sectorLabel.style.borderColor = 'rgba(16,185,129,.25)';
+        }
+      }
       const mb = document.getElementById('marketBanner');
       if (marketClosed) {
         mb.style.display = 'flex';
