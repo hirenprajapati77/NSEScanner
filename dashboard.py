@@ -2285,10 +2285,10 @@ tbody tr:hover td:first-child {
     <span>NSE Market is closed — displaying scan results from the last active trading session. Ticker paused.</span>
   </div>
 
-  <!-- Cold start boot helper alert -->
-  <div class="cold-banner" id="coldBanner">
+  <!-- Cold start banner (OCI always-on — hidden permanently) -->
+  <div class="cold-banner" id="coldBanner" style="display:none">
     <i class="ti ti-clock-pause"></i>
-    <span>Server is waking up from sleep (Render free tier) — first scan may take 30-60 s longer than usual.</span>
+    <span>Server starting up — first scan may take a moment.</span>
     <button onclick="document.getElementById('coldBanner').classList.remove('show')" style="margin-left:auto;background:none;border:none;color:var(--pro-watch);cursor:pointer;font-size:16px">✕</button>
   </div>
 
@@ -4782,7 +4782,7 @@ function updateProgress(p){
   if (cur === 0) {
     fill.classList.add('waking');
     document.getElementById('progPct').textContent = 'Connecting…';
-    document.getElementById('progStatus').textContent = `[Waking Up] Render server is booting (Free tier)`;
+    document.getElementById('progStatus').textContent = `Connecting to scanner…`;
   } else {
     fill.classList.remove('waking');
     fill.style.width=pctV+'%';
@@ -5148,13 +5148,9 @@ function saveAlert(){
 }
 
 function detectColdStart(){
+  // OCI server is always-on — no cold start banner needed
   const key='nse_last_visit';
-  const now=Date.now();
-  const last=parseInt(localStorage.getItem(key)||'0');
-  if(!last || (now-last)>30*60*1000){
-    document.getElementById('coldBanner').classList.add('show');
-  }
-  localStorage.setItem(key,now);
+  localStorage.setItem(key, Date.now());
 }
 
 // ── Journal Ledgers state ──────────────────────────────────
