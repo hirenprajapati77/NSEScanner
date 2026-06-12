@@ -771,11 +771,15 @@ def fetch_with_timeout(
 
 
 def prefetch_batch(tickers: list, period="2y") -> dict:
-    """Download up to 50 tickers in one API call."""
+    """Download tickers in batches of 50 concurrently."""
     cache = {}
     batch_size = 50
-    for i in range(0, len(tickers), batch_size):
-        batch = tickers[i:i+batch_size]
+    batches = [tickers[i:i+batch_size] for i in range(0, len(tickers), batch_size)]
+    
+    cache_lock = threading.Lock()
+    
+    def _download_batch(batch_idx_and_batch):
+        idx, batch = batch_idx_and_batch
         try:
             with _YF_SEMAPHORE:
                 data = yf.download(
@@ -783,22 +787,38 @@ def prefetch_batch(tickers: list, period="2y") -> dict:
                     progress=False, auto_adjust=True,
                     group_by="ticker", threads=True
                 )
+            
+            local_cache = {}
             for ticker in batch:
                 try:
                     if isinstance(data.columns, pd.MultiIndex):
                         if ticker in data.columns.levels[0]:
-                            cache[ticker] = data[ticker].dropna()
+                            df = data[ticker].dropna()
+                            local_cache[ticker] = df if not df.empty else None
                         else:
-                            cache[ticker] = data.dropna()
+                            df = data.dropna()
+                            local_cache[ticker] = df if not df.empty else None
                     else:
-                        cache[ticker] = data.dropna()
+                        df = data.dropna()
+                        local_cache[ticker] = df if not df.empty else None
                 except Exception:
-                    cache[ticker] = None
-            log.info(f"Batch {i//batch_size+1}: "
-                     f"{len(batch)} stocks prefetched")
+                    local_cache[ticker] = None
+                    
+            with cache_lock:
+                cache.update(local_cache)
+                
+            log.info(f"Batch {idx+1}: {len(batch)} stocks prefetched")
         except Exception as e:
-            log.warning(f"Batch prefetch failed: {e}")
+            log.warning(f"Batch {idx+1} prefetch failed: {e}")
+            with cache_lock:
+                for ticker in batch:
+                    cache[ticker] = None
+
+    with ThreadPoolExecutor(max_workers=3) as ex:
+        ex.map(_download_batch, list(enumerate(batches)))
+        
     return cache
+
 
 
 def analyse(
@@ -806,6 +826,7 @@ def analyse(
     bearish: bool = False,
     cfg_override: Optional[Dict] = None,
     explain_skip: bool = False,
+    df: Optional[pd.DataFrame] = None,
 ) -> Optional[Dict]:
     """
     Returns a signal dict if the stock passes all filters,
@@ -832,27 +853,38 @@ def analyse(
         # Fetch Nifty market regime once at the top — used by multiple filters below
         nifty_regime = get_regime().get("regime", "NEUTRAL").upper()
         
-        cached = (cfg_override or {}).get("_data_cache", {})
-        df = cached.get(ticker)
         if df is None or df.empty:
-            df = _download(ticker, use_cache_only=use_cache_only)
+            cached = (cfg_override or {}).get("_data_cache", {})
+            df = cached.get(ticker)
+            if df is None or df.empty:
+                df = _download(ticker, use_cache_only=use_cache_only)
+            else:
+                df = normalize_dataframe(df)
+                try:
+                    # Save to local CSV cache
+                    cache_path = os.path.join(CACHE_DIR, f"{ticker}.csv")
+                    df.to_csv(cache_path)
+                except Exception:
+                    pass
         else:
             df = normalize_dataframe(df)
-            try:
-                # Save to local CSV cache
-                cache_path = os.path.join(CACHE_DIR, f"{ticker}.csv")
-                df.to_csv(cache_path)
-            except Exception:
-                pass
 
-        if df is None or df.empty or len(df) < min_len:
+        if df is None or df.empty:
             if explain_skip:
                 return {
                     "symbol": ticker.replace(".NS", ""),
                     "skipped": True,
-                    "reason": f"Insufficient price history (requires at least {min_len} days, found {len(df) if df is not None else 0})"
+                    "reason": "No price history found"
                 }
             return None
+
+        # Verify index is DatetimeIndex and sort ascending
+        if not isinstance(df.index, pd.DatetimeIndex):
+            try:
+                df.index = pd.to_datetime(df.index)
+            except Exception:
+                pass
+        df = df.sort_index(ascending=True)
 
         # Flatten MultiIndex columns → lowercase strings
         if isinstance(df.columns, pd.MultiIndex):
@@ -861,95 +893,22 @@ def analyse(
             df.columns = [str(c).lower() for c in df.columns]
 
         df.dropna(inplace=True)
-        
-        # ── Live price + previous close via fast_info (cache-busted) ──
-        # Always create a FRESH Ticker object — never reuse across scans
-        ticker_obj = yf.Ticker(ticker)
-        try:
-            ticker_obj._history = {}   # clear any in-process instance cache
-        except Exception:
-            pass
-        year_high    = None
-        year_low     = None
-        live_price   = None
-        prev_close_fi = None   # fast_info previous_close — always accurate
 
-        try:
-            with _YF_SEMAPHORE:
-                fast = ticker_obj.fast_info
-                live_price    = fast.get('lastPrice') or fast.get('last_price')
-                prev_close_fi = fast.get('regularMarketPreviousClose') or fast.get('previousClose') or fast.get('previous_close')
-                year_high     = fast.get('yearHigh') or fast.get('year_high')
-                year_low      = fast.get('yearLow') or fast.get('year_low')
-                
-                day_high      = fast.get('dayHigh') or fast.get('day_high')
-                day_low       = fast.get('dayLow') or fast.get('day_low')
-                day_open      = fast.get('open')
-            
-            if live_price is not None:
-                from datetime import date
-                today_date = date.today()
-                last_date  = df.index[-1].date()
-                
-                # If today is a weekday and last row is from a previous day, append a new row for today
-                if today_date.weekday() < 5 and last_date < today_date:
-                    new_open = float(day_open) if day_open is not None else float(live_price)
-                    new_row = pd.DataFrame(
-                        [[new_open, new_open, new_open, float(live_price), 0.0]], 
-                        columns=["open", "high", "low", "close", "volume"],
-                        index=[pd.Timestamp(today_date)]
-                    )
-                    df = pd.concat([df, new_row])
-                
-                df.at[df.index[-1], "close"] = float(live_price)
-                
-                # Update high/low/open to prevent structural violations (high < close, low > close etc)
-                current_high = df.at[df.index[-1], "high"]
-                current_low  = df.at[df.index[-1], "low"]
-                
-                val_high = float(day_high) if day_high is not None else float(live_price)
-                val_low  = float(day_low) if day_low is not None else float(live_price)
-                
-                df.at[df.index[-1], "high"] = max(float(current_high), val_high, float(live_price))
-                df.at[df.index[-1], "low"]  = min(float(current_low), val_low, float(live_price))
-                
-                current_open = df.at[df.index[-1], "open"]
-                df.at[df.index[-1], "open"] = max(df.at[df.index[-1], "low"], min(df.at[df.index[-1], "high"], float(current_open)))
-        except Exception as e:
-            log.warning(f"Error fetching fast_info for {ticker}: {e}")
+        # Verify minimum length constraint immediately
+        if len(df) < min_len:
+            if explain_skip:
+                return {
+                    "symbol": ticker.replace(".NS", ""),
+                    "skipped": True,
+                    "reason": f"Insufficient price history (requires at least {min_len} days, found {len(df)})"
+                }
+            return None
 
-        # ── Fallback: if fast_info gave no live price, do a quick 5d download ──
-        # This handles Yahoo Finance rate-limiting of fast_info during market hours.
-        if live_price is None:
-            try:
-                with _YF_SEMAPHORE:
-                    _df5 = yf.download(
-                        ticker, period="5d", interval="1d",
-                        progress=False, auto_adjust=True, timeout=15
-                    )
-                if _df5 is not None and not _df5.empty:
-                    if isinstance(_df5.columns[0], tuple):
-                        _df5.columns = [c[0].lower() for c in _df5.columns]
-                    else:
-                        _df5.columns = [str(c).lower() for c in _df5.columns]
-                    
-                    _close_col = _df5["close"]
-                    if isinstance(_close_col, pd.DataFrame):
-                        _today_close = float(_close_col.iloc[-1].iloc[0])
-                        _today_prev  = float(_close_col.iloc[-2].iloc[0]) if len(_df5) >= 2 else None
-                    else:
-                        _today_close = float(_close_col.iloc[-1])
-                        _today_prev  = float(_close_col.iloc[-2]) if len(_df5) >= 2 else None
-                    # Only use if it looks like today's data
-                    from datetime import date
-                    if _df5.index[-1].date() >= date.today():
-                        live_price = _today_close
-                        df.at[df.index[-1], "close"] = _today_close
-                        log.info(f"{ticker}: fast_info unavailable; used 5d download close={_today_close:.2f}")
-                        if prev_close_fi is None and _today_prev is not None:
-                            prev_close_fi = _today_prev
-            except Exception as e2:
-                log.warning(f"{ticker}: 5d fallback also failed: {e2}")
+        # Extract values directly from df instead of making fast_info network calls
+        live_price    = float(df["close"].iloc[-1])
+        prev_close_fi = float(df["close"].iloc[-2]) if len(df) >= 2 else live_price
+        year_high     = None
+        year_low      = None
 
         # OHLC Data Integrity Validation
         if not validate_dataframe(df, ticker):
@@ -1708,15 +1667,36 @@ def run_scan(
     # Download Nifty index first for RS ranking
     get_nifty_returns()
 
-    def _task(ticker: str) -> Optional[Dict]:
+    regime_data  = get_regime()
+    regime_name  = regime_data.get("regime", "NEUTRAL")
+    log.info(f"📊 Market Regime: {regime_name} | "
+             f"Breadth: {regime_data.get('breadth', 50)}% | "
+             f"NIFTY: ₹{regime_data.get('nifty_close', 0):,.2f}")
+
+    # FIX C: In bear regimes, automatically loosen the RS 50d floor to -10.0
+    # so that stocks only slightly underperforming Nifty still show up
+    if regime_name in ("BEAR", "STRONG_BEAR"):
+        cfg_override = dict(cfg_override or {})
+        cfg_override.setdefault("rs_50d_floor", -10.0)
+        log.info(f"🐻 Bear regime detected — loosening RS 50d floor to {cfg_override['rs_50d_floor']:.1f}%")
+
+    data_cache = cfg_override.get("_data_cache", {})
+
+    for idx, ticker in enumerate(tickers):
         if stop_event and stop_event.is_set():
-            return None
+            break
         if time.time() - counter["start"] > scan_deadline:
-            log.warning(f"⏱️ Scan deadline exceeded: skipping {ticker}")
-            return None
-        
-        is_hit = _get_cache_hit(ticker)
-        result = fetch_with_timeout(ticker, bearish=bearish, cfg_override=cfg_override, timeout=stock_timeout)
+            log.warning(f"⏱️ Scan deadline exceeded: skipping remaining tickers")
+            break
+
+        df = data_cache.get(ticker)
+        is_hit = 0
+        if df is None or len(df) < 260:
+            result = fetch_with_timeout(ticker, bearish=bearish, cfg_override=cfg_override, timeout=stock_timeout)
+        else:
+            is_hit = 1
+            result = analyse(ticker, bearish=bearish, cfg_override=cfg_override, df=df)
+
         if result:
             result["raw_score"] = result["score"]  # keep original raw score
             result["regime_score"] = adjust_score_for_regime(
@@ -1733,13 +1713,15 @@ def run_scan(
                 min_score = max(0, min_score - 10)
             if result["raw_score"] < min_score:
                 result = None
-        
-        with lock:
-            counter["n"] += 1
-            counter["cache_hits"] += is_hit
-            n       = counter["n"]
-            elapsed = time.time() - counter["start"]
-            eta     = int((elapsed / n) * (total - n)) if n > 0 else 0
+
+        if result:
+            results.append(result)
+
+        counter["n"] += 1
+        counter["cache_hits"] += is_hit
+        n       = counter["n"]
+        elapsed = time.time() - counter["start"]
+        eta     = int((elapsed / n) * (total - n)) if n > 0 else 0
 
         mode = "BEAR" if bearish else "BULL"
         log.info(f"[{n}/{total}] {mode} {ticker} → {'✅ SIGNAL (' + result.get('confidence', '') + ')' if result else 'skip'}")
@@ -1749,33 +1731,6 @@ def run_scan(
                 progress_cb(n, total, ticker, eta)
             except Exception:
                 pass
-        return result
-
-    regime_data  = get_regime()
-    regime_name  = regime_data.get("regime", "NEUTRAL")
-    log.info(f"📊 Market Regime: {regime_name} | "
-             f"Breadth: {regime_data.get('breadth', 50)}% | "
-             f"NIFTY: ₹{regime_data.get('nifty_close', 0):,.2f}")
-
-    # FIX C: In bear regimes, automatically loosen the RS 50d floor to -10.0
-    # so that stocks only slightly underperforming Nifty still show up
-    if regime_name in ("BEAR", "STRONG_BEAR"):
-        cfg_override = dict(cfg_override or {})
-        cfg_override.setdefault("rs_50d_floor", -10.0)
-        log.info(f"🐻 Bear regime detected — loosening RS 50d floor to {cfg_override['rs_50d_floor']:.1f}%")
-
-    with ThreadPoolExecutor(max_workers=10) as pool:
-        futures = {pool.submit(_task, t): t for t in tickers}
-        try:
-            for fut in as_completed(futures, timeout=scan_deadline + 10):
-                try:
-                    r = fut.result()
-                    if r:
-                        results.append(r)
-                except Exception:
-                    pass
-        except FuturesTimeoutError:
-            log.warning("⏱️ ThreadPoolExecutor scan hit outer timeout limit!")
 
     # Force progress to 100% if deadline or timeout cut the scan short
     if progress_cb and counter["n"] < total:
