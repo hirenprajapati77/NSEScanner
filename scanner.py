@@ -89,7 +89,7 @@ CFG: Dict = {
 SKIP_TICKERS = {
     "VMART.NS",        # V-Mart acquired by Reliance — delisted
     "TATAMOTORS.NS",   # Demerged into TMCV + TMPV
-    "MINDTREE.NS",     # Merged into LTIMindtree (LTIM.NS)
+    "MINDTREE.NS",     # Merged into LTIMindtree (now LTM.NS)
     "PVR.NS",          # Merged with INOX — now PVRINOX.NS
     "DELTACORP.NS",    # Suspended
     "TEJASNET.NS",     # Often illiquid/suspended
@@ -97,6 +97,57 @@ SKIP_TICKERS = {
     "KALPATPOWR.NS",   # Timeout/Delisted
     "L&TFH.NS",        # Timeout/Delisted
     "UJAAS.NS",        # No data
+    # ── Confirmed dead/renamed as of Jun 2026 (saves prefetch retry time) ──
+    "LTIM.NS",         # Renamed → LTM.NS (Feb 2026)
+    "ZOMATO.NS",       # Rebranded → ETERNAL.NS (Apr 2025)
+    "GMRINFRA.NS",     # Renamed → GMRP.NS
+    "IBULHSGFIN.NS",   # Merged/Delisted
+    "DALMIACEMB.NS",   # Merged into DALMIABHA
+    "MAHINDCIE.NS",    # Delisted
+    "LAXMIMACH.NS",    # Delisted
+    "INOXLEISUR.NS",   # Merged → PVRINOX.NS
+    "ISEC.NS",         # Renamed → ICICIKSEC.NS
+    "MTAR.NS",         # Renamed/Delisted
+    "MINDA.NS",        # Merged → UNOMINDA.NS
+    "SEQUENT.NS",      # Delisted
+    "PVCL.NS",         # Delisted
+    "AMARAJABAT.NS",   # Renamed → AMARA.NS
+    "WELSPUNIND.NS",   # Renamed
+    "TVSMOTORS.NS",    # Wrong symbol — use TVSMOTOR.NS
+    "ASIANHOTEL.NS",   # Renamed
+    "ADANITRANS.NS",   # Delisted (merged into ADANIGREEN)
+    "ANDHRBANK.NS",    # Merged into Union Bank
+    "TCNSBRANDS.NS",   # Delisted (acquired)
+    "ARBL.NS",         # Renamed → AMARA.NS
+    "AMINES.NS",       # Delisted
+    "DELHIBANK.NS",    # Merged into Bank of Baroda
+    "DHANI.NS",        # Renamed/Delisted
+    "INDSWFTMED.NS",   # Delisted
+    "GDL.NS",          # Delisted
+    "EQUITAS.NS",      # Merged → EQUITASBNK.NS
+    "JCHAC.NS",        # Delisted
+    "INFOEDGE.NS",     # Renamed → NAUKRI.NS
+    "OCCL.NS",         # Delisted
+    "PRAJ.NS",         # Data issues
+    "MEGH.NS",         # Delisted
+    "KKALPATARUPROJ.NS", # Delisted
+    "JUNIPERHOTEL.NS", # Delisted
+    "NLC.NS",          # Renamed → NLCINDIA.NS
+    "SAILESH.NS",      # Delisted
+    "SPICEJET.NS",     # Suspended
+    "SALPG.NS",        # Delisted
+    "SHRIRAMCIT.NS",   # Merged → SHRIRAMFIN.NS
+    "SHRIRAMC.NS",     # Merged → SHRIRAMFIN.NS
+    "SRTRANSFIN.NS",   # Merged → SHRIRAMFIN.NS
+    "SGBSEBI.NS",      # Sovereign Gold Bond — no equity data
+    "PUREIT.NS",       # Delisted
+    "TINPLATE.NS",     # Data issues (use TINPLATE.BO)
+    "SUNCLAYLTD.NS",   # Delisted
+    "SUVENPHAR.NS",    # Renamed → SUVEN.NS
+    "TRANSRAIL.NS",    # IPO 2024, insufficient 2y history
+    "SWANENERGY.NS",   # Delisted
+    "TATAMETALI.NS",   # Merged into TATASTEEL
+    "ULTRATECH.NS",    # Wrong symbol — use ULTRACEMCO.NS
 }
 
 
@@ -217,7 +268,7 @@ NIFTY500_HARDCODED: List[str] = [
     "DIVISLAB.NS","DRREDDY.NS","CIPLA.NS","EICHERMOT.NS","HEROMOTOCO.NS",
     "GRASIM.NS","BPCL.NS","COALINDIA.NS","INDUSINDBK.NS","ADANIPORTS.NS",
     "ADANIENT.NS","HINDALCO.NS","SBILIFE.NS","HDFCLIFE.NS","M&M.NS",
-    "TATACONSUM.NS","BRITANNIA.NS","BAJAJ-AUTO.NS","LTIM.NS","SHRIRAMFIN.NS",
+    "TATACONSUM.NS","BRITANNIA.NS","BAJAJ-AUTO.NS","LTM.NS","SHRIRAMFIN.NS",
     # Nifty Next 50
     "DABUR.NS","MARICO.NS","PIDILITIND.NS","BERGEPAINT.NS","HAVELLS.NS",
     "GODREJCP.NS","MUTHOOTFIN.NS","CHOLAFIN.NS","SRF.NS","AARTIIND.NS",
@@ -234,7 +285,7 @@ NIFTY500_HARDCODED: List[str] = [
     "PERSISTENT.NS","PETRONET.NS","PFC.NS","PVR.NS","RAMCOCEM.NS",
     "RBLBANK.NS","RECLTD.NS","SAIL.NS","SHREECEM.NS","SIEMENS.NS",
     "SUPREMEIND.NS","SYNGENE.NS","TRENT.NS","UBL.NS","VEDL.NS",
-    "VOLTAS.NS","ZOMATO.NS","ZYDUSLIFE.NS","ABFRL.NS","ABSLAMC.NS",
+    "VOLTAS.NS","ETERNAL.NS","ZYDUSLIFE.NS","ABFRL.NS","ABSLAMC.NS",
     "AFFLE.NS","AJANTPHARM.NS","ALEMBICLTD.NS","ANGELONE.NS","APLAPOLLO.NS",
     "APLLTD.NS","ARVINDFASN.NS","ASTRAL.NS","ATUL.NS","AUROPHARMA.NS",
     "AVANTIFEED.NS","BAJAJHLDNG.NS","BATAINDIA.NS","BAYERCROP.NS","BIKAJI.NS",
@@ -814,7 +865,7 @@ def prefetch_batch(tickers: list, period="2y") -> dict:
                 for ticker in batch:
                     cache[ticker] = None
 
-    with ThreadPoolExecutor(max_workers=11) as ex:
+    with ThreadPoolExecutor(max_workers=3) as ex:
         ex.map(_download_batch, list(enumerate(batches)))
         
     return cache
