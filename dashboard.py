@@ -259,6 +259,8 @@ def _do_scan(params: dict, scan_id: str) -> None:
 
     scan_mode = params.get("scan_mode", "bullish")   # bullish | bearish | both
     tickers   = params.get("tickers") or NIFTY500_SAMPLE
+    import logging
+    logging.getLogger("NSEScanner").info(f"⚡ Background scan started: scan_mode={scan_mode}, tickers={len(tickers)}")
 
     def _progress(current: int, total: int, ticker: str, eta: int = 0) -> None:
         if _state.get("scan_id") != scan_id:
