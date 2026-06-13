@@ -1653,6 +1653,7 @@ def run_scan(
     stop_event: set it to cancel an in-progress scan gracefully.
     """
     scan_start = time.time()
+    original_cfg = cfg_override
     cfg_override = dict(cfg_override or {})
     raw_tickers = list(tickers or NIFTY500_SAMPLE)
     # Fix 1: Warn if market is closed but proceed using last session data
@@ -1708,6 +1709,8 @@ def run_scan(
         data_cache = prefetch_batch(tickers, progress_cb=progress_cb)
         log.info(f"Prefetch done in {time.time()-prefetch_start:.1f}s")
         cfg_override["_data_cache"] = data_cache
+        if isinstance(original_cfg, dict):
+            original_cfg["_data_cache"] = data_cache
 
     total   = len(tickers)
     results: List[Dict] = []
