@@ -4094,7 +4094,7 @@ function updateCounts(){
   const srch=document.getElementById('tickerSearch').value.toLowerCase();
   const vm=parseFloat(document.getElementById('volMult').value);
   
-  let base=stocks.filter(s=>s.vol_ratio>=vm && (!srch||s.symbol.toLowerCase().includes(srch)));
+  let base=stocks.filter(s=>(!srch||s.symbol.toLowerCase().includes(srch)));
   if (activeSector) {
     base = base.filter(s => getStockSector(s) === activeSector);
   }
@@ -4289,7 +4289,7 @@ function render(isTick = false){
   const vm = parseFloat(document.getElementById('volMult').value);
 
   // 1. Sector & Search pre-filter
-  let f = stocks.filter(s => s.vol_ratio >= vm && (!srch || s.symbol.toLowerCase().includes(srch)));
+  let f = stocks.filter(s => (!srch || s.symbol.toLowerCase().includes(srch)));
   if (activeSector) {
     f = f.filter(s => getStockSector(s) === activeSector);
   }
