@@ -21,9 +21,9 @@ import threading
 import sqlite3
 from datetime import datetime
 from typing import Callable, Dict, List, Optional
-
 import pandas as pd
 import requests
+import redis
 import yfinance as yf
 import concurrent.futures
 from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError as FuturesTimeoutError
@@ -38,6 +38,14 @@ except ImportError:
     psutil = None
 
 load_dotenv()
+
+# Initialize Redis
+try:
+    redis_client = redis.Redis(host='localhost', port=6379, db=0, decode_responses=True)
+    redis_client.ping()  # test connection
+except Exception as e:
+    logging.getLogger("NSEScanner").warning(f"Redis not available: {e}")
+    redis_client = None
 
 logging.basicConfig(
     level=logging.INFO,
@@ -59,7 +67,7 @@ CFG: Dict = {
     "EMA_50":         os.getenv("EMA_50",  "false").lower() == "true",
     "EMA_200":        os.getenv("EMA_200", "false").lower() == "true",
     # Minimum score to surface a signal
-    "MIN_SCORE":      int(os.getenv("MIN_SCORE",      "70")),
+    "MIN_SCORE":      int(os.getenv("MIN_SCORE",      "0")),
     # 52-week lookback window (trading days)
     "HV_DAYS":        int(os.getenv("HV_DAYS",        "252")),
     # Concurrency
@@ -836,29 +844,64 @@ def prefetch_batch(tickers: list, period="2y", progress_cb: Optional[Callable] =
         nonlocal completed_batches
         idx, batch = batch_idx_and_batch
         try:
-            with _YF_SEMAPHORE:
-                data = yf.download(
-                    batch, period=period, interval="1d",
-                    progress=False, auto_adjust=True,
-                    group_by="ticker", threads=True
-                )
-            
             local_cache = {}
-            for ticker in batch:
-                try:
-                    if isinstance(data.columns, pd.MultiIndex):
-                        if ticker in data.columns.levels[0]:
-                            df = data[ticker].dropna()
-                            local_cache[ticker] = df if not df.empty else None
+            missing_batch = []
+            
+            # Check Redis first
+            if redis_client:
+                for ticker in batch:
+                    try:
+                        cached = redis_client.get(f"stock:{ticker}")
+                        if cached == "EMPTY":
+                            local_cache[ticker] = pd.DataFrame()
+                        elif cached:
+                            df = pd.read_json(cached, orient='split')
+                            if len(df) >= 260:
+                                local_cache[ticker] = df
+                            else:
+                                missing_batch.append(ticker)
+                        else:
+                            missing_batch.append(ticker)
+                    except Exception:
+                        missing_batch.append(ticker)
+            else:
+                missing_batch = batch
+                
+            # Download missing
+            if missing_batch:
+                with _YF_SEMAPHORE:
+                    data = yf.download(
+                        missing_batch, period=period, interval="1d",
+                        progress=False, auto_adjust=True,
+                        group_by="ticker", threads=True
+                    )
+            
+                for ticker in missing_batch:
+                    try:
+                        if isinstance(data.columns, pd.MultiIndex):
+                            if ticker in data.columns.levels[0]:
+                                df = data[ticker].dropna()
+                                local_cache[ticker] = df if not df.empty else None
+                            else:
+                                df = data.dropna()
+                                local_cache[ticker] = df if not df.empty else None
                         else:
                             df = data.dropna()
                             local_cache[ticker] = df if not df.empty else None
-                    else:
-                        df = data.dropna()
-                        local_cache[ticker] = df if not df.empty else None
-                except Exception:
-                    local_cache[ticker] = None
+                    except Exception:
+                        local_cache[ticker] = None
                     
+            if redis_client:
+                for ticker, df in local_cache.items():
+                    try:
+                        if df is not None and not df.empty:
+                            redis_client.setex(f"stock:{ticker}", 86400, df.to_json(date_format='iso', orient='split'))
+                        else:
+                            # Cache an explicit empty marker so we don't try downloading dead stocks again
+                            redis_client.setex(f"stock:{ticker}", 86400, "EMPTY")
+                    except Exception as e:
+                        log.debug(f"Failed to cache {ticker} to Redis: {e}")
+                            
             with cache_lock:
                 cache.update(local_cache)
                 
@@ -1168,7 +1211,6 @@ def analyse(
         # Pivot MUST use yesterday's OHLC — same data as H3/H4/L3/L4
         # Using 52wk high/low (hv_high/hv_low) puts pivot at wrong scale vs targets
         pivot = round((y_high + y_low + prev_close) / 3, 2)
-        entry = pivot  # Pivot is the institutional entry standard
 
         cam = {
             "pivot": pivot,
@@ -1181,6 +1223,20 @@ def analyse(
             "L3":    round(prev_close - y_rng * 1.1 / 4,  2),  # StopLoss for Bull
             "L4":    round(prev_close - y_rng * 1.1 / 2,  2),
         }
+
+        # ── Dynamic Entry Logic ──
+        prev_open = float(df["open"].iloc[-2])
+        prev_body_pct = (prev_close - prev_open) / prev_open * 100
+
+        if not bearish and prev_body_pct > 1.5:
+            entry = cam["H3"]
+            entry_type = "H3_BREAKOUT"
+        elif bearish and prev_body_pct < -1.5:
+            entry = cam["L3"]
+            entry_type = "L3_BREAKDOWN"
+        else:
+            entry = cam["pivot"]
+            entry_type = "PIVOT"
 
         # ── Advanced Quant Indicators ─────────────────────────
         # ATR (14-day Average True Range)
@@ -1223,8 +1279,8 @@ def analyse(
                     else:
                         nifty_ret = 0.0
                     rs_vs_nifty = round(stock_ret - nifty_ret, 2)
-                    # Hard cap — realistic range is -30% to +30%
-                    rs_vs_nifty = max(-30.0, min(30.0, rs_vs_nifty))
+                    # Cap the max distortion to +/- 50%
+                    rs_vs_nifty = max(-50.0, min(50.0, rs_vs_nifty))
         except Exception:
             rs_vs_nifty = 0.0
         rs_pct = rs_vs_nifty
@@ -1296,13 +1352,27 @@ def analyse(
                     return None
 
         if not bearish:
-            target1 = cam["H3"]
+            if entry_type == "H3_BREAKOUT":
+                target1 = cam["H4"]
+                stop_loss = cam["H2"] # Fixed stop loss to H2 for RR > 1.5
+            elif entry_type == "L3_BREAKDOWN":
+                target1 = cam["pivot"]
+                stop_loss = cam["L4"]
+            else:
+                target1 = cam["H3"]
+                stop_loss = cam["L3"]
             target2 = cam["H4"]
-            stop_loss = cam["L3"]
         else:
-            target1 = cam["L3"]
+            if entry_type == "L3_BREAKDOWN":
+                target1 = cam["L4"]
+                stop_loss = cam["L2"] # Fixed stop loss to L2 for RR > 1.5
+            elif entry_type == "H3_BREAKOUT":
+                target1 = cam["pivot"]
+                stop_loss = cam["H4"]
+            else:
+                target1 = cam["L3"]
+                stop_loss = cam["H3"]
             target2 = cam["L4"]
-            stop_loss = cam["H3"]
 
         # ── Candle direction ──────────────────────────────────
         body   = close - float(last["open"])
@@ -1353,16 +1423,17 @@ def analyse(
         atr_multiplier = 1.0 if nifty_regime in ("BEAR", "STRONG_BEAR") else 1.5
         min_risk_distance = atr_multiplier * last_atr
         
-        if not bearish:
-            # Bullish: risk = entry - stop_loss
-            current_risk = entry - stop_loss
-            if current_risk < min_risk_distance:
-                stop_loss = round(entry - min_risk_distance, 2)
-        else:
-            # Bearish: risk = stop_loss - entry
-            current_risk = stop_loss - entry
-            if current_risk < min_risk_distance:
-                stop_loss = round(entry + min_risk_distance, 2)
+        if entry_type == "PIVOT":
+            if not bearish:
+                # Bullish: risk = entry - stop_loss
+                current_risk = entry - stop_loss
+                if current_risk < min_risk_distance:
+                    stop_loss = round(entry - min_risk_distance, 2)
+            else:
+                # Bearish: risk = stop_loss - entry
+                current_risk = stop_loss - entry
+                if current_risk < min_risk_distance:
+                    stop_loss = round(entry + min_risk_distance, 2)
 
         # Now re-calculate risk and reward with the adjusted stop-loss
         reward = abs(target1 - entry)
@@ -1431,6 +1502,7 @@ def analyse(
             "target":            target1,
             "target2":           target2,
             "entry":             entry,
+            "entry_type":        entry_type,
             "cam":               cam,
             "candle":            candle,
             "vol_ratio":         round(vol_ratio, 2),
@@ -1649,7 +1721,7 @@ def run_scan(
     """
     Scan tickers concurrently.
 
-    progress_cb(current, total, ticker, eta_seconds) is called after each ticker.
+    progress_cb(current, total, ticker, eta_seconds, current_signals) is called after each ticker.
     stop_event: set it to cancel an in-progress scan gracefully.
     """
     scan_start = time.time()
@@ -1754,17 +1826,32 @@ def run_scan(
 
     data_cache = cfg_override.get("_data_cache", {})
 
-    for idx, ticker in enumerate(tickers):
+    def _process_ticker(ticker: str) -> None:
         if stop_event and stop_event.is_set():
-            break
+            return
         if time.time() - counter["start"] > scan_deadline:
-            log.warning(f"⏱️ Scan deadline exceeded: skipping remaining tickers")
-            break
+            return
 
         df = data_cache.get(ticker)
         is_hit = 0
-        if df is None or len(df) < 260:
+        if df is None and redis_client:
+            try:
+                cached = redis_client.get(f"stock:{ticker}")
+                if cached == "EMPTY":
+                    df = pd.DataFrame() # empty frame
+                    is_hit = 1
+                elif cached:
+                    df = pd.read_json(cached, orient='split')
+                    if len(df) >= 260:
+                        is_hit = 1
+            except Exception as e:
+                log.debug(f"Redis cache miss/error for {ticker}: {e}")
+        
+        if df is None or (not df.empty and len(df) < 260):
             result = fetch_with_timeout(ticker, bearish=bearish, cfg_override=cfg_override, timeout=stock_timeout)
+        elif df.empty:
+            result = None
+            is_hit = 1
         else:
             is_hit = 1
             result = analyse(ticker, bearish=bearish, cfg_override=cfg_override, df=df)
@@ -1786,28 +1873,38 @@ def run_scan(
             if result["raw_score"] < min_score:
                 result = None
 
-        if result:
-            results.append(result)
+        with lock:
+            if result:
+                results.append(result)
 
-        counter["n"] += 1
-        counter["cache_hits"] += is_hit
-        n       = counter["n"]
-        elapsed = time.time() - counter["start"]
-        eta     = int((elapsed / n) * (total - n)) if n > 0 else 0
+            counter["n"] += 1
+            counter["cache_hits"] += is_hit
+            n       = counter["n"]
+            elapsed = time.time() - counter["start"]
+            eta     = int((elapsed / n) * (total - n)) if n > 0 else 0
 
         mode = "BEAR" if bearish else "BULL"
         log.info(f"[{n}/{total}] {mode} {ticker} → {'✅ SIGNAL (' + result.get('confidence', '') + ')' if result else 'skip'}")
 
         if progress_cb:
             try:
-                progress_cb(n, total, ticker, eta)
+                # Pass a copy to avoid race condition during incremental rendering
+                progress_cb(n, total, ticker, eta, list(results))
             except Exception:
                 pass
+
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        futures = [executor.submit(_process_ticker, t) for t in tickers]
+        for f in as_completed(futures):
+            try:
+                f.result()
+            except Exception as e:
+                log.warning(f"Error in processing ticker thread: {e}")
 
     # Force progress to 100% if deadline or timeout cut the scan short
     if progress_cb and counter["n"] < total:
         try:
-            progress_cb(total, total, "Complete (deadline reached)", 0)
+            progress_cb(total, total, "Complete (deadline reached)", 0, results)
         except Exception:
             pass
 

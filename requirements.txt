@@ -25,3 +25,4 @@ beautifulsoup4>=4.12.0        # Used internally by yfinance
 
 # ── System monitoring ─────────────────────────────────────
 psutil>=5.9.0                 # Memory and CPU benchmark metrics logging
+redis

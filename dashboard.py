@@ -262,12 +262,22 @@ def _do_scan(params: dict, scan_id: str) -> None:
     import logging
     logging.getLogger("NSEScanner").info(f"⚡ Background scan started: scan_mode={scan_mode}, tickers={len(tickers)}")
 
-    def _progress(current: int, total: int, ticker: str, eta: int = 0) -> None:
+    def _progress(current: int, total: int, ticker: str, eta: int = 0, current_signals: list = None) -> None:
         if _state.get("scan_id") != scan_id:
             _stop_event.set()
-        _update_state(
-            progress={"current": current, "total": total, "ticker": ticker, "eta": eta}
-        )
+        
+        update_args = {
+            "progress": {"current": current, "total": total, "ticker": ticker, "eta": eta}
+        }
+        
+        # Incrementally update the dashboard grid as signals are found
+        if current_signals is not None:
+            combined = list(all_signals)
+            combined.extend(current_signals)
+            combined.sort(key=lambda x: x["score"], reverse=True)
+            update_args["signals"] = combined
+            
+        _update_state(**update_args)
 
     try:
         all_signals = []
@@ -4544,12 +4554,17 @@ function render(isTick = false){
       const pullbackEntry = targets1; // Recalculated to Today's H3/L3 Target
       const displayDist = isStale ? ((s.price - pullbackEntry) / pullbackEntry) * 100 : distVal;
 
+      let badgeHtml = '';
+      if (s.entry_type === 'H3_BREAKOUT') badgeHtml = '<span style="background:var(--pro-buy-bg);color:var(--pro-buy);font-size:8px;padding:2px 4px;border-radius:4px;margin-left:4px;font-weight:700">H3</span>';
+      else if (s.entry_type === 'L3_BREAKDOWN') badgeHtml = '<span style="background:var(--pro-sell-bg);color:var(--pro-sell);font-size:8px;padding:2px 4px;border-radius:4px;margin-left:4px;font-weight:700">L3</span>';
+      else badgeHtml = '<span style="background:var(--bg-accent);color:var(--text-muted);font-size:8px;padding:2px 4px;border-radius:4px;margin-left:4px;font-weight:700">PIVOT</span>';
+
       const entryLabel = isStale 
         ? `<span style="font-size:11px;font-weight:600;color:var(--text-muted)">₹${pivots.toFixed(1)}</span> ` +
-          `<span style="color:#fbbf24;font-weight:800">→ ₹${pullbackEntry.toFixed(1)}</span>` +
+          `<span style="color:#fbbf24;font-weight:800">→ ₹${pullbackEntry.toFixed(1)}</span> ` + badgeHtml +
           `<br><span style="font-size:8.5px;color:#fbbf24;font-weight:800;cursor:help;text-decoration:underline dashed" title="Original pivot: ₹${pivots.toFixed(1)} | Recalculated to Today's ${isBull?'H3':'L3'}: ₹${pullbackEntry.toFixed(1)} for Dist%">(${isBull?"Today's H3":"Today's L3"}) ⓘ</span>`
-        : `<span style="color:var(--text-primary);font-weight:700">₹${pivots.toFixed(1)}</span>` +
-          `<br><span style="font-size:8.5px;color:var(--text-muted)">(Pivot)</span>`;
+        : `<span style="color:var(--text-primary);font-weight:700">₹${pivots.toFixed(1)}</span> ` + badgeHtml +
+          `<br><span style="font-size:8.5px;color:var(--text-muted)">(${s.entry_type ? s.entry_type.replace('_BREAKOUT', '').replace('_BREAKDOWN', '') : 'Pivot'})</span>`;
 
       const statusBadge = (() => {
         const rawDist = s.dist_from_entry !== undefined ? s.dist_from_entry
@@ -4801,6 +4816,14 @@ function checkStatus(){
     if(d.scanning){
       setScanningUI(true);
       if(d.progress) updateProgress(d.progress);
+      
+      if(d.signals && d.signals.length > 0){
+        stocks=preprocess(d.signals);
+        updateSidebarWidgets();
+        updateCounts(); 
+        loadScorecard();
+        render();
+      }
     } else {
       setScanningUI(false);
       document.getElementById('coldBanner').classList.remove('show');
