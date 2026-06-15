@@ -334,10 +334,25 @@ def analyse(
         
         hist_today = df["macdhist"].iloc[-1]
         hist_yest = df["macdhist"].iloc[-2] if len(df) >= 2 else 0
-        if not bearish and hist_yest < 0 and hist_today > 0:
-            mom_bonus += 5
-        if bearish and hist_yest > 0 and hist_today < 0:
-            mom_bonus += 5
+        hist_3_days_ago = df["macdhist"].iloc[-3] if len(df) >= 3 else hist_yest
+        macd_hist_slope = hist_today - hist_3_days_ago
+        macd_divergence = False
+        
+        macd_cross = (hist_yest < 0 and hist_today > 0)
+        macd_cross_down = (hist_yest > 0 and hist_today < 0)
+        
+        if not bearish:
+            if macd_cross and macd_hist_slope > 0:
+                mom_bonus += 5
+            elif macd_cross and macd_hist_slope <= 0:
+                mom_bonus -= 8
+                macd_divergence = True
+        else:
+            if macd_cross_down and macd_hist_slope < 0:
+                mom_bonus += 5
+            elif macd_cross_down and macd_hist_slope >= 0:
+                mom_bonus -= 8
+                macd_divergence = True
             
         # Freshness Bonus (max +10) — cumulative tiers, no double-count
         fresh_bonus = 0
@@ -354,15 +369,25 @@ def analyse(
         from sector_rotation import STOCK_SECTOR_MAP
         sec_name = STOCK_SECTOR_MAP.get(ticker.replace(".NS", ""), "Unknown")
         sector_bonus = 0
+        sector_rank = None
         if sec_name != "Unknown" and sector_dict:
             sec_list = sector_dict.get("sectors", [])
-            sec_item = next((s for s in sec_list if s.get("name") == sec_name), None)
-            if sec_item:
-                change = sec_item.get("change", 0.0)
-                if not bearish and change > 0:
-                    sector_bonus = 5
-                elif bearish and change < 0:
-                    sector_bonus = 5
+            sec_list_sorted = sorted(sec_list, key=lambda x: x.get("change", 0.0), reverse=True)
+            for idx, s in enumerate(sec_list_sorted):
+                if s.get("name") == sec_name:
+                    sector_rank = idx + 1
+                    break
+            
+            if sector_rank is not None:
+                total_sectors = len(sec_list_sorted)
+                if not bearish:
+                    if sector_rank == 1:   sector_bonus = 5
+                    elif sector_rank == 2: sector_bonus = 3
+                    else:                  sector_bonus = 0
+                else:
+                    if sector_rank == total_sectors:     sector_bonus = 5
+                    elif sector_rank == total_sectors-1: sector_bonus = 3
+                    else:                                sector_bonus = 0
         
         score_breakdown = {
             "volume": vol_bonus,
@@ -371,7 +396,8 @@ def analyse(
             "rr": rr_bonus,
             "extension": ext_penalty,
             "sector_bonus": sector_bonus,
-            "hard_cap": False
+            "hard_cap": False,
+            "macd_divergence": macd_divergence
         }
         
         score = score + vol_bonus + mom_bonus + fresh_bonus + rr_bonus + ext_penalty + sector_bonus
@@ -416,6 +442,7 @@ def analyse(
             "rsi_14"         : round(rsi_14, 2),
             "regime"         : regime,
             "sector"         : sec_name, 
+            "sector_rank"    : sector_rank,
             "score_breakdown": score_breakdown,
             "camarilla"      : cam,
             "flags"          : flags,
