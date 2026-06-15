@@ -94,6 +94,20 @@ CFG: Dict = {
     "SCAN_MODE":      os.getenv("SCAN_MODE",          "both"),
 }
 
+def is_post_market_invalidation_window() -> bool:
+    """Check if current time is in the post-market cache invalidation window (15:30 to 16:05 IST)."""
+    try:
+        from datetime import datetime, timezone, timedelta
+        utc_now = datetime.now(timezone.utc)
+        ist_now = utc_now + timedelta(hours=5, minutes=30)
+        # Invalidation window is between 15:30 and 16:05 IST (3:30 PM to 4:05 PM)
+        if (ist_now.hour == 15 and ist_now.minute >= 30) or (ist_now.hour == 16 and ist_now.minute <= 5):
+            return True
+    except Exception as e:
+        log = logging.getLogger("NSEScanner")
+        log.warning(f"Error checking invalidation window: {e}")
+    return False
+
 SKIP_TICKERS = {
     "VMART.NS",        # V-Mart acquired by Reliance — delisted
     "TATAMOTORS.NS",   # Demerged into TMCV + TMPV
@@ -185,7 +199,7 @@ def _make_session() -> requests.Session:
 
 
 _SESSION = _make_session()
-_YF_SEMAPHORE = threading.Semaphore(5)  # max 5 concurrent YF requests
+_YF_SEMAPHORE = threading.Semaphore(1)  # max 1 concurrent YF request (prevents yfinance state corruption)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -724,8 +738,8 @@ def _download(ticker: str, retries: int = 3, use_cache_only: bool = False) -> Op
                 pass
         return None
 
-    # Check cache validity — 12 hour TTL
-    if os.path.exists(cache_path):
+    # Check cache validity — 12 hour TTL (except during post-market invalidation window 15:30–16:05 IST)
+    if not is_post_market_invalidation_window() and os.path.exists(cache_path):
         try:
             mtime = os.path.getmtime(cache_path)
             _ttl = 43200   # 12 hours EOD cache TTL
@@ -800,13 +814,14 @@ def fetch_with_timeout(
     cfg_override: Optional[Dict] = None,
     explain_skip: bool = False,
     timeout: int = 30,
+    market_context: Optional[Dict] = None,
 ) -> Optional[Dict]:
     """
     Wraps analyse() with a hard per-stock timeout.
     If yfinance hangs, this returns None after timeout seconds.
     """
     with ThreadPoolExecutor(max_workers=1) as ex:
-        future = ex.submit(analyse, ticker, bearish=bearish, cfg_override=cfg_override, explain_skip=explain_skip)
+        future = ex.submit(analyse, ticker, bearish=bearish, cfg_override=cfg_override, explain_skip=explain_skip, market_context=market_context)
         try:
             return future.result(timeout=timeout)
         except FuturesTimeoutError:
@@ -847,8 +862,8 @@ def prefetch_batch(tickers: list, period="2y", progress_cb: Optional[Callable] =
             local_cache = {}
             missing_batch = []
             
-            # Check Redis first
-            if redis_client:
+            # Check Redis first (unless in post-market invalidation window)
+            if redis_client and not is_post_market_invalidation_window():
                 for ticker in batch:
                     try:
                         cached = redis_client.get(f"stock:{ticker}")
@@ -873,21 +888,31 @@ def prefetch_batch(tickers: list, period="2y", progress_cb: Optional[Callable] =
                     data = yf.download(
                         missing_batch, period=period, interval="1d",
                         progress=False, auto_adjust=True,
-                        group_by="ticker", threads=True
+                        group_by="ticker", threads=False
                     )
             
                 for ticker in missing_batch:
                     try:
                         if isinstance(data.columns, pd.MultiIndex):
-                            if ticker in data.columns.levels[0]:
-                                df = data[ticker].dropna()
+                            # group_by='ticker' → levels[0] = tickers, levels[1] = OHLCV
+                            all_tickers = list(data.columns.get_level_values(0).unique())
+                            if ticker in all_tickers:
+                                df = data[ticker].copy()
+                                df.columns = [str(c).lower() for c in df.columns]
+                                df = df.dropna()
                                 local_cache[ticker] = df if not df.empty else None
                             else:
-                                df = data.dropna()
-                                local_cache[ticker] = df if not df.empty else None
+                                # Ticker not found — mark as missing, do not store wrong data
+                                local_cache[ticker] = None
                         else:
-                            df = data.dropna()
-                            local_cache[ticker] = df if not df.empty else None
+                            # Single-ticker non-MultiIndex download
+                            if len(missing_batch) == 1 and ticker == missing_batch[0]:
+                                df = data.copy()
+                                df.columns = [str(c).lower() for c in df.columns]
+                                df = df.dropna()
+                                local_cache[ticker] = df if not df.empty else None
+                            else:
+                                local_cache[ticker] = None
                     except Exception:
                         local_cache[ticker] = None
                     
@@ -936,777 +961,22 @@ def analyse(
     cfg_override: Optional[Dict] = None,
     explain_skip: bool = False,
     df: Optional[pd.DataFrame] = None,
+    market_context: Optional[Dict] = None,
 ) -> Optional[Dict]:
-    """
-    Returns a signal dict if the stock passes all filters,
-    or a skipped explanation dict if explain_skip is True,
-    otherwise None if it does not qualify.
-    cfg_override allows per-scan settings without mutating the global CFG.
-    """
-    if ticker in SKIP_TICKERS:
-        if explain_skip:
-            return {
-                "symbol": ticker.replace(".NS", ""),
-                "skipped": True,
-                "reason": "Ticker is in the dead/delisted skip list"
-            }
-        return None
-
-    cfg      = {**CFG, **(cfg_override or {})}
-    vol_days = cfg["VOL_DAYS"]
-    hv_days  = cfg["HV_DAYS"]
-    min_len  = max(260, vol_days + 10, hv_days + 5)
-
-    try:
-        use_cache_only = cfg.get("USE_CACHE_ONLY", False)
-        # Fetch Nifty market regime once at the top — used by multiple filters below
-        nifty_regime = get_regime().get("regime", "NEUTRAL").upper()
-        
-        if df is None or df.empty:
-            cached = (cfg_override or {}).get("_data_cache", {})
-            df = cached.get(ticker)
-            if df is None or df.empty:
-                df = _download(ticker, use_cache_only=use_cache_only)
-            else:
-                df = normalize_dataframe(df)
-                try:
-                    # Save to local CSV cache
-                    cache_path = os.path.join(CACHE_DIR, f"{ticker}.csv")
-                    df.to_csv(cache_path)
-                except Exception:
-                    pass
-        else:
-            df = normalize_dataframe(df)
-
-        if df is None or df.empty:
-            if explain_skip:
-                return {
-                    "symbol": ticker.replace(".NS", ""),
-                    "skipped": True,
-                    "reason": "No price history found"
-                }
-            return None
-
-        # Verify index is DatetimeIndex and sort ascending
-        if not isinstance(df.index, pd.DatetimeIndex):
-            try:
-                df.index = pd.to_datetime(df.index)
-            except Exception:
-                pass
-        df = df.sort_index(ascending=True)
-
-        # Flatten MultiIndex columns → lowercase strings
-        if isinstance(df.columns, pd.MultiIndex):
-            df.columns = [c[0].lower() for c in df.columns]
-        else:
-            df.columns = [str(c).lower() for c in df.columns]
-
-        df.dropna(inplace=True)
-
-        # Verify minimum length constraint immediately
-        if len(df) < min_len:
-            if explain_skip:
-                return {
-                    "symbol": ticker.replace(".NS", ""),
-                    "skipped": True,
-                    "reason": f"Insufficient price history (requires at least {min_len} days, found {len(df)})"
-                }
-            return None
-
-        # Extract values directly from df instead of making fast_info network calls
-        live_price    = float(df["close"].iloc[-1])
-        prev_close_fi = float(df["close"].iloc[-2]) if len(df) >= 2 else live_price
-        year_high     = None
-        year_low      = None
-
-        # OHLC Data Integrity Validation
-        if not validate_dataframe(df, ticker):
-            if explain_skip:
-                return {
-                    "symbol": ticker.replace(".NS", ""),
-                    "skipped": True,
-                    "reason": "Data integrity validation failed (corrupt pricing or NaNs)"
-                }
-            return None
-
-        # ── EMAs ──────────────────────────────────────────────
-        df["ema10"]  = df["close"].ewm(span=10,  adjust=False).mean()
-        df["ema20"]  = df["close"].ewm(span=20,  adjust=False).mean()
-        df["ema50"]  = df["close"].ewm(span=50,  adjust=False).mean()
-        df["ema200"] = df["close"].ewm(span=200, adjust=False).mean()
-
-        # ── Wilder's RSI 14 ──────────────────────────────────
-        delta = df["close"].diff()
-        gain = (delta.where(delta > 0, 0)).ewm(alpha=1/14, adjust=False).mean()
-        loss = (-delta.where(delta < 0, 0)).ewm(alpha=1/14, adjust=False).mean()
-        rs = gain / loss.replace(0, 1e-9)
-        df["rsi14"] = 100 - (100 / (1 + rs))
-
-        # ── Volume N-day average (shift(1) excludes today) ────
-        df["vol_avg"] = df["volume"].rolling(vol_days).mean().shift(1)
-
-        last  = df.iloc[-1]
-        close = float(last["close"])
-        rsi   = float(df["rsi14"].iloc[-1]) if not pd.isna(df["rsi14"].iloc[-1]) else 50.0
-
-        # ── Day change % — CRITICAL: use fast_info.previous_close ────────
-        # fast_info['previous_close'] is always yesterday's official close
-        # regardless of whether the CSV cache is stale or today's bar is incomplete.
-        # Fallback chain: fast_info → df.iloc[-2] → 0%
-        if prev_close_fi is not None and float(prev_close_fi) > 0:
-            prev_close = float(prev_close_fi)
-            log.debug(f"{ticker}: prev_close from fast_info = {prev_close:.2f}")
-        elif len(df) >= 2:
-            prev_close = float(df["close"].iloc[-2])
-            log.debug(f"{ticker}: prev_close fallback from df.iloc[-2] = {prev_close:.2f}")
-        else:
-            prev_close = close
-        day_change = (close - prev_close) / prev_close * 100 if prev_close > 0 else 0.0
-
-        # Minimum Price Filter
-        min_price = float(cfg.get("MIN_PRICE", 50.0))
-        if close < min_price:
-            log.info(f"🚩 {ticker}: Rejected due to low price (₹{close:.2f} < ₹{min_price:.2f})")
-            if explain_skip:
-                return {
-                    "symbol": ticker.replace(".NS", ""),
-                    "skipped": True,
-                    "reason": f"Low price (₹{close:.2f} < ₹{min_price:.2f})"
-                }
-            return None
-
-        high    = float(last["high"])
-        low     = float(last["low"])
-        volume  = float(last["volume"])
-        vol_avg = float(last["vol_avg"]) if not pd.isna(last["vol_avg"]) else 0.0
-
-        if vol_avg == 0:
-            if explain_skip:
-                return {
-                    "symbol": ticker.replace(".NS", ""),
-                    "skipped": True,
-                    "reason": "Average volume is zero"
-                }
-            return None
-
-        vol_ratio = volume / vol_avg
-
-        # ── Volume filter ──────────────────────────────────────
-        if vol_ratio < cfg["VOL_MULT"]:
-            if explain_skip:
-                return {
-                    "symbol": ticker.replace(".NS", ""),
-                    "skipped": True,
-                    "reason": f"Volume spike not confirmed (Vol ratio {vol_ratio:.2f}x < {cfg['VOL_MULT']}x)"
-                }
-            return None
-
-        # ── High Priority Improvement #1: Liquidity Filter ───
-        df["turnover"] = df["close"] * df["volume"]
-        avg_turnover = float(df["turnover"].rolling(window=20).mean().iloc[-1])
-        turnover_score = round(avg_turnover / 10000000.0, 2)  # in Crores
-        
-        # Enforce Minimum average turnover
-        if avg_turnover < cfg["TURNOVER_LIMIT"]:
-            log.info(f"🛡️ {ticker}: Rejected due to low liquidity (₹{turnover_score:.2f} Cr < ₹{cfg['TURNOVER_LIMIT']/10000000:.2f} Cr)")
-            if explain_skip:
-                return {
-                    "symbol": ticker.replace(".NS", ""),
-                    "skipped": True,
-                    "reason": f"Low liquidity (Turnover ₹{turnover_score:.2f} Cr < ₹{cfg['TURNOVER_LIMIT']/10000000:.2f} Cr)"
-                }
-            return None
-
-        # ── EMA filters ───────────────────────────────────────
-        if not bearish:
-            ema_checks = {
-                "ema10_pass":  (not cfg["EMA_10"])  or (close > float(last["ema10"])),
-                "ema20_pass":  (not cfg["EMA_20"])  or (close > float(last["ema20"])),
-                "ema50_pass":  (not cfg["EMA_50"])  or (close > float(last["ema50"])),
-                "ema200_pass": (not cfg["EMA_200"]) or (close > float(last["ema200"])),
-            }
-        else:
-            # Bearish: price BELOW all enabled EMAs
-            ema_checks = {
-                "ema10_pass":  (not cfg["EMA_10"])  or (close < float(last["ema10"])),
-                "ema20_pass":  (not cfg["EMA_20"])  or (close < float(last["ema20"])),
-                "ema50_pass":  (not cfg["EMA_50"])  or (close < float(last["ema50"])),
-                "ema200_pass": (not cfg["EMA_200"]) or (close < float(last["ema200"])),
-            }
-
-        if not all(ema_checks.values()):
-            if explain_skip:
-                failed = [k.replace('_pass', '').upper() for k, v in ema_checks.items() if not v]
-                return {
-                    "symbol": ticker.replace(".NS", ""),
-                    "skipped": True,
-                    "reason": f"Trend alignment failed ({'price below' if not bearish else 'price above'} {', '.join(failed)})"
-                }
-            return None
-
-        # ── 52-week High/Low window ────────────────────────────
-        lookback        = df.iloc[-252:]  # Enforce strictly 252-day lookback for correct 52-week range
-        hv_high         = float(lookback["high"].max())
-        hv_low          = float(lookback["low"].min())
-
-        if year_high is not None:
-            hv_high = float(year_high)
-        if year_low is not None:
-            hv_low = float(year_low)
-
-        # Sanity Check for stock splits / demergers data errors
-        if close > hv_high * 1.05:
-            log.warning(f"🚩 {ticker}: Sanity check failed (LTP ₹{close:.2f} > 52W High ₹{hv_high:.2f} * 1.05)")
-            if explain_skip:
-                return {
-                    "symbol": ticker.replace(".NS", ""),
-                    "skipped": True,
-                    "reason": f"DATA ERROR ⚠️ (LTP ₹{close:.2f} > 52W High ₹{hv_high:.2f} * 1.05)"
-                }
-            return None
-
-        hv_high_idx     = lookback["high"].idxmax()
-        hv_date         = hv_high_idx.strftime("%d-%b-%Y")
-        days_since_high = int((datetime.now().date() - hv_high_idx.date()).days)
-
-        # Enforce maximum 52-week age limit (e.g., ignore setups older than 180 trading days)
-        max_days = int(cfg.get("MAX_52W_AGE", 180))
-        if days_since_high > max_days:
-            log.info(f"🚩 {ticker}: Rejected due to stale 52W age ({days_since_high} days > {max_days} days)")
-            if explain_skip:
-                return {
-                    "symbol": ticker.replace(".NS", ""),
-                    "skipped": True,
-                    "reason": f"Stale 52W age ({days_since_high} days > {max_days} days)"
-                }
-            return None
-
-        cam_range = hv_high - hv_low
-        if cam_range < close * 0.05:  # 52w range less than 5% of price
-            if explain_skip:
-                return {
-                    "symbol": ticker.replace(".NS", ""),
-                    "skipped": True,
-                    "reason": "Camarilla 52w range too narrow"
-                }
-            log.debug(f"{ticker}: Camarilla 52w range too narrow — skipping")
-            return None
-
-        # Yesterday's daily range
-        y_high = float(df.iloc[-2]["high"])
-        y_low = float(df.iloc[-2]["low"])
-        y_rng = y_high - y_low
-        
-        if y_rng < close * 0.005:  # Daily range less than 0.5% of price (bad tick/zero volume)
-            if explain_skip:
-                return {
-                    "symbol": ticker.replace(".NS", ""),
-                    "skipped": True,
-                    "reason": f"Yesterday's daily range too narrow ({y_rng:.2f})"
-                }
-            log.debug(f"{ticker}: Yesterday's daily range too narrow ({y_rng:.2f}) — skipping")
-            return None
-
-        # ── Camarilla Levels & Math ────────────────────────────
-        # Pivot MUST use yesterday's OHLC — same data as H3/H4/L3/L4
-        # Using 52wk high/low (hv_high/hv_low) puts pivot at wrong scale vs targets
-        pivot = round((y_high + y_low + prev_close) / 3, 2)
-
-        cam = {
-            "pivot": pivot,
-            "H1":    round(prev_close + y_rng * 1.1 / 12, 2),
-            "H2":    round(prev_close + y_rng * 1.1 / 6,  2),
-            "H3":    round(prev_close + y_rng * 1.1 / 4,  2),  # Target1 for Bull
-            "H4":    round(prev_close + y_rng * 1.1 / 2,  2),  # Target2 for Bull
-            "L1":    round(prev_close - y_rng * 1.1 / 12, 2),
-            "L2":    round(prev_close - y_rng * 1.1 / 6,  2),
-            "L3":    round(prev_close - y_rng * 1.1 / 4,  2),  # StopLoss for Bull
-            "L4":    round(prev_close - y_rng * 1.1 / 2,  2),
-        }
-
-        # ── Dynamic Entry Logic ──
-        prev_open = float(df["open"].iloc[-2])
-        prev_body_pct = (prev_close - prev_open) / prev_open * 100
-
-        if not bearish and prev_body_pct > 1.5:
-            entry = cam["H3"]
-            entry_type = "H3_BREAKOUT"
-        elif bearish and prev_body_pct < -1.5:
-            entry = cam["L3"]
-            entry_type = "L3_BREAKDOWN"
-        else:
-            entry = cam["pivot"]
-            entry_type = "PIVOT"
-
-        # ── Advanced Quant Indicators ─────────────────────────
-        # ATR (14-day Average True Range)
-        highs = df["high"]
-        lows = df["low"]
-        closes = df["close"].shift(1)
-        tr1 = highs - lows
-        tr2 = (highs - closes).abs()
-        tr3 = (lows - closes).abs()
-        tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
-        df["atr"] = tr.rolling(window=14).mean()
-        
-        last_atr = float(df["atr"].iloc[-1]) if not pd.isna(df["atr"].iloc[-1]) else (close * 0.02)
-        
-        # ── High Priority Improvement #2: 20-Day and 50-Day Relative Strength vs Nifty ───
-        nifty_20d, nifty_50d, nifty_63d = get_nifty_returns()
-        
-        # Safe RS vs Nifty calculation (63-day)
-        rs_vs_nifty = 0.0
-        try:
-            if len(df) >= 63:
-                stock_now   = float(df["close"].iloc[-1])
-                stock_start = float(df["close"].iloc[-63])
-                if stock_start > 0:
-                    stock_ret = (stock_now / stock_start - 1) * 100
-                else:
-                    stock_ret = 0.0
-
-                nifty_df = yf.download("^NSEI", period="4mo",
-                             interval="1d", progress=False,
-                             auto_adjust=True)
-                if not nifty_df.empty and len(nifty_df) >= 63:
-                    nc = [c[0].lower() if isinstance(c,tuple) 
-                          else str(c).lower() for c in nifty_df.columns]
-                    nifty_df.columns = nc
-                    nifty_now   = float(nifty_df["close"].iloc[-1])
-                    nifty_start = float(nifty_df["close"].iloc[-63])
-                    if nifty_start > 0:
-                        nifty_ret = (nifty_now / nifty_start - 1) * 100
-                    else:
-                        nifty_ret = 0.0
-                    rs_vs_nifty = round(stock_ret - nifty_ret, 2)
-                    # Cap the max distortion to +/- 50%
-                    rs_vs_nifty = max(-50.0, min(50.0, rs_vs_nifty))
-        except Exception:
-            rs_vs_nifty = 0.0
-        rs_pct = rs_vs_nifty
-        
-        # Stock 50-day return (trend confirmation filter)
-        close_50d = float(df["close"].iloc[-50]) if len(df) >= 50 else float(df["close"].iloc[0])
-        stock_ret_50d = (close - close_50d) / close_50d * 100
-        rs_50d = round(stock_ret_50d - nifty_50d, 2)
-        
-        # Enforce positive 50-day relative strength for Bullish, or negative for Bearish
-        # FIX A: floor is dynamic — defaults to -10.0, loosened further to -10.0 in bear regimes via run_scan()
-        rs_50d_floor = float(cfg.get("rs_50d_floor", -10.0))
-        if not bearish and rs_50d <= rs_50d_floor:
-            log.info(f"🚩 {ticker}: Rejected due to weak 50-day relative strength ({rs_50d:.2f}% <= {rs_50d_floor:.1f}%)")
-            if explain_skip:
-                return {
-                    "symbol": ticker.replace(".NS", ""),
-                    "skipped": True,
-                    "reason": f"Weak 50-day relative strength ({rs_50d:.2f}% <= {rs_50d_floor:.1f}%)"
-                }
-            return None
-        elif bearish and rs_50d >= 0:
-            log.info(f"🚩 {ticker}: Rejected due to positive 50-day relative strength ({rs_50d:.2f}% >= 0)")
-            if explain_skip:
-                return {
-                    "symbol": ticker.replace(".NS", ""),
-                    "skipped": True,
-                    "reason": f"Positive 50-day relative strength ({rs_50d:.2f}% >= 0)"
-                }
-            return None
-
-        # ── BUY Scan Strict Trend/Momentum Filters ─────────────
-        if not bearish:
-            # 1. Day change filter: only apply during live market (after-hours = yesterday's close, not useful as a filter)
-            # FIX B: skip this filter when market is closed — swing setups should not be penalised for yesterday's red
-            if is_nse_market_open() and day_change < -1.0:
-                log.info(f"🚩 {ticker}: Excluded from BUY scan due to negative day change ({day_change:.2f}% < -1.0%)")
-                if explain_skip:
-                    return {
-                        "symbol": ticker.replace(".NS", ""),
-                        "skipped": True,
-                        "reason": f"Negative day change ({day_change:.2f}% < -1.0%)"
-                    }
-                return None
-
-            # 2. RSI filter — FIX L: rsi_floor is 30 in BEAR regime, else 35
-            rsi_floor = 30 if nifty_regime in ("BEAR", "STRONG_BEAR") else 35
-            if rsi < rsi_floor:
-                log.info(f"🚩 {ticker}: Excluded from BUY scan — RSI too low ({rsi:.2f} < {rsi_floor})")
-                if explain_skip:
-                    return {
-                        "symbol": ticker.replace(".NS", ""),
-                        "skipped": True,
-                        "reason": f"RSI too low ({rsi:.2f} < {rsi_floor})"
-                    }
-                return None
-
-            # 3. Bear market gate — FIX D: relaxed thresholds
-            # RSI floor already applied above. Only apply vol gate during live market hours.
-            if "BEAR" in nifty_regime:
-                if is_nse_market_open() and vol_ratio <= 2.0:
-                    log.info(f"🚩 {ticker}: Excluded — bear market live scan requires Vol > 2.0x (found {vol_ratio:.2f}x)")
-                    if explain_skip:
-                        return {
-                            "symbol": ticker.replace(".NS", ""),
-                            "skipped": True,
-                            "reason": f"Bear market live scan: low volume ({vol_ratio:.2f}x ≤ 2.0x required)"
-                        }
-                    return None
-
-        if not bearish:
-            if entry_type == "H3_BREAKOUT":
-                target1 = cam["H4"]
-                stop_loss = cam["H2"] # Fixed stop loss to H2 for RR > 1.5
-            elif entry_type == "L3_BREAKDOWN":
-                target1 = cam["pivot"]
-                stop_loss = cam["L4"]
-            else:
-                target1 = cam["H3"]
-                stop_loss = cam["L3"]
-            target2 = cam["H4"]
-        else:
-            if entry_type == "L3_BREAKDOWN":
-                target1 = cam["L4"]
-                stop_loss = cam["L2"] # Fixed stop loss to L2 for RR > 1.5
-            elif entry_type == "H3_BREAKOUT":
-                target1 = cam["pivot"]
-                stop_loss = cam["H4"]
-            else:
-                target1 = cam["L3"]
-                stop_loss = cam["H3"]
-            target2 = cam["L4"]
-
-        # ── Candle direction ──────────────────────────────────
-        body   = close - float(last["open"])
-        candle = "Bull" if body > 0 else "Bear"
-
-        # ── Distance metrics ─────────────────────────────────
-        pct_above = round((close - hv_low)  / hv_low  * 100, 2) if hv_low  else 0.0
-        pct_below = round((hv_high - close) / hv_high * 100, 2) if hv_high else 0.0
-
-        upside   = round((target1 - close) / close * 100, 2) if not bearish else round((close - target1) / close * 100, 2)
-        downside = round((close - stop_loss) / close * 100, 2) if not bearish else round((stop_loss - close) / close * 100, 2)
-
-        # ── Advanced Quant Indicators ─────────────────────────
-        today_range = high - low
-        range_expansion = round(today_range / last_atr, 2) if last_atr else 1.0
-
-        # EMA 20 Slope (5-day percentage slope)
-        prev_ema20 = float(df["ema20"].iloc[-5]) if len(df) >= 5 else float(last["ema20"])
-        ema20_slope = round((float(last["ema20"]) - prev_ema20) / prev_ema20 * 100, 4) if prev_ema20 else 0.0
-
-        # ATR-based overextension distance
-        atr_dist = round((close - float(last["ema20"])) / last_atr, 2) if last_atr else 0.0
-
-        # Volume percentile (last 20 days)
-        vol_percentile = round(float((df["volume"].iloc[-20:] < volume).mean() * 100), 2)
-
-        rs_score = 10 if (not bearish and rs_pct > 0) or (bearish and rs_pct < 0) else -10
-
-        # Relative Strength (percentage distance of close relative to 200 EMA)
-        ema200_val = float(last["ema200"])
-        relative_strength = round((close - ema200_val) / ema200_val * 100, 2) if ema200_val else 0.0
-
-        # Market Regime Status
-        ema50_val = float(last["ema50"])
-        if close > ema50_val and ema50_val > ema200_val:
-            regime = "Strong Bullish"
-        elif close > ema50_val and ema50_val <= ema200_val:
-            regime = "Moderate Bullish"
-        elif close < ema50_val and ema50_val < ema200_val:
-            regime = "Strong Bearish"
-        elif close < ema50_val and ema50_val >= ema200_val:
-            regime = "Moderate Bearish"
-        else:
-            regime = "Consolidation"
-
-        # ── Critical Fix #3: Risk / Reward Calculations with ATR-based Stop Loss Cap ───
-        # Enforce a minimum stop-loss distance of 1.5 * ATR (or 1.0 * ATR in BEAR regime) to prevent dangerously tight stops
-        atr_multiplier = 1.0 if nifty_regime in ("BEAR", "STRONG_BEAR") else 1.5
-        min_risk_distance = atr_multiplier * last_atr
-        
-        if entry_type == "PIVOT":
-            if not bearish:
-                # Bullish: risk = entry - stop_loss
-                current_risk = entry - stop_loss
-                if current_risk < min_risk_distance:
-                    stop_loss = round(entry - min_risk_distance, 2)
-            else:
-                # Bearish: risk = stop_loss - entry
-                current_risk = stop_loss - entry
-                if current_risk < min_risk_distance:
-                    stop_loss = round(entry + min_risk_distance, 2)
-
-        # Now re-calculate risk and reward with the adjusted stop-loss
-        reward = abs(target1 - entry)
-        risk = abs(entry - stop_loss)
-        if risk < entry * 0.005:
-            rr = 0.0
-        else:
-            rr = min(99.0, round(reward / risk, 2))
-            
-        risk_percentage = round((risk / entry) * 100, 2)
-        
-        # Enforce maximum acceptable risk — FIX M: market-hours-aware thresholds (8% live / 20% after-hours)
-        if is_nse_market_open():
-            if risk_percentage > 8.0:
-                log.info(f"🛡️ {ticker}: Rejected due to high risk ({risk_percentage}% > 8.0%) — Capital preserved.")
-                if explain_skip:
-                    return {
-                        "symbol": ticker.replace(".NS", ""),
-                        "skipped": True,
-                        "reason": f"Risk too high ({risk_percentage}% > 8.0% of Pivot entry)"
-                    }
-                return None
-        else:
-            if risk_percentage > 20.0:
-                log.info(f"🛡️ {ticker}: Rejected due to high risk ({risk_percentage}% > 20.0%) — Capital preserved.")
-                if explain_skip:
-                    return {
-                        "symbol": ticker.replace(".NS", ""),
-                        "skipped": True,
-                        "reason": f"Risk too high ({risk_percentage}% > 20.0% of Pivot entry)"
-                    }
-                return None
-
-        # Enforce minimum Risk/Reward floor — FIX H: bear regime uses 0.4 (tighter Camarilla targets in downtrends)
-        rr_floor = 0.4 if nifty_regime in ("BEAR", "STRONG_BEAR") else 1.5
-        if rr < rr_floor:
-            log.info(f"🛡️ {ticker}: Rejected due to poor Risk/Reward ratio ({rr} < {rr_floor}) — Capital preserved.")
-            if explain_skip:
-                return {
-                    "symbol": ticker.replace(".NS", ""),
-                    "skipped": True,
-                    "reason": f"Poor Risk/Reward ratio (1:{rr:.2f} < 1:{rr_floor})"
-                }
-            return None
-
-        last_5_closes = df["close"].tail(5).tolist()
-        sparkline_data = []  # reset inside the per-stock loop
-        for price_val in last_5_closes:
-            sparkline_data.append(round(float(price_val), 2))
-
-        result: Dict = {
-            "symbol":            ticker.replace(".NS", ""),
-            "signal_type":       "Bear" if bearish else "Bull",
-            "price":             round(close, 2),
-            "rsi":               round(rsi, 2),
-            "change":            round(day_change, 2),
-            "hv_high":           round(hv_high, 2),
-            "hv_low":            round(hv_low,  2),
-            "hv_date":           hv_date,
-            "days":              days_since_high,
-            "pct_above":         pct_above,
-            "pct_below":         pct_below,
-            "upside":            upside,
-            "downside":          downside,
-            "stop_loss":         stop_loss,
-            "target":            target1,
-            "target2":           target2,
-            "entry":             entry,
-            "entry_type":        entry_type,
-            "cam":               cam,
-            "candle":            candle,
-            "vol_ratio":         round(vol_ratio, 2),
-            "volume":            int(volume),
-            "vol_avg":           int(vol_avg),
-            "ema10":             round(float(last["ema10"]),  2),
-            "ema20":             round(float(last["ema20"]),  2),
-            "ema50":             round(float(last["ema50"]),  2),
-            "ema200":            round(float(last["ema200"]), 2),
-            "scanned_date":      df.index[-1].strftime("%d-%b-%Y"),
-            "scanned_time":      datetime.now().strftime("%H:%M"),
-            "scanned_timestamp": time.time(),
-            "dist_from_entry":   round(((close - entry) / entry) * 100, 2) if entry else 0.0,
-            "atr":               round(last_atr, 2),
-            "range_expansion":   range_expansion,
-            "ema20_slope":       ema20_slope,
-            "atr_dist":          atr_dist,
-            "vol_percentile":    vol_percentile,
-            "relative_strength": relative_strength,
-            "regime":            regime,
-            "rr":                rr,
-            "rs_pct":            rs_pct,
-            "rs_50d":            rs_50d,
-            "rs_score":          rs_score,
-            "turnover_score":    turnover_score,
-            "risk_percentage":   risk_percentage,
-            "sparkline":         sparkline_data,
-            **ema_checks,
-        }
-
-        # Upgraded scoring, momentum, and new columns logic (v5.0)
-        from score_engine import calculate_score
-        from scanner_momentum import check_buy_signal, check_sell_signal
-        from sector_rotation import STOCK_SECTOR_MAP
-        from scanner_core import get_sector_data_cached
-
-        clean_sym = ticker.replace(".NS", "")
-        sector_name = STOCK_SECTOR_MAP.get(clean_sym, "General Equity")
-        result["sector"] = sector_name
-
-        # Trigger = H4 (breakout level), used for entry_status logic
-        trigger = cam["H4"]
-        sl = cam["L3"]
-        dist_pct = abs((close - trigger) / trigger * 100) if trigger else 0.0
-
-        # Step 13 columns
-        result["cmp"] = close
-        result["trigger"] = trigger
-        result["sl"] = sl
-
-        # Recompute R:R cleanly from the actual entry/target/stop in result dict
-        # (Previous formula used (52wk_high/52wk_low)*price as target — completely wrong)
-        _entry  = result.get("entry",     close)
-        _target = result.get("target",    close)   # H3 for Bull, L3 for Bear
-        _stop   = result.get("stop_loss", close)   # L3 for Bull, H3 for Bear
-        _reward = abs(_target - _entry)
-        _risk   = abs(_entry  - _stop)
-        if _risk < _entry * 0.005:
-            result["rr"] = 0.0
-        else:
-            result["rr"] = min(15.0, round(_reward / _risk, 2))
-        
-        # Signal Age & Entry color helpers
-        def _get_signal_age(scan_time):
-            now = datetime.now()
-            diff_mins = (now - scan_time).seconds // 60
-            if diff_mins < 5:
-                return "NEW", "#00ff88"
-            elif diff_mins < 30:
-                return "HOT", "#ffa500"
-            elif diff_mins < 120:
-                return "ACTIVE", "#60a5fa"
-            elif scan_time.date() == now.date():
-                return "LIVE", "#9ca3af"
-            else:
-                return "LAST SESSION", "#ef4444"
-
-        def _get_entry_color(dist_pct_val):
-            if dist_pct_val <= 1.0:
-                return "#00ff88"
-            elif dist_pct_val <= 2.0:
-                return "#ffa500"
-            elif dist_pct_val <= 5.0:
-                return "#ef4444"
-            else:
-                return "#6b7280"
-
-        age_label, age_color = _get_signal_age(datetime.now())
-        result["signal_age"] = age_label
-        result["age_color"] = age_color
-        result["entry_color"] = _get_entry_color(dist_pct)
-        result["dist_pct"] = dist_pct
-        
-        # entry_status for uniform filtering
-        if not bearish:
-            if close < trigger * 0.99:
-                result["entry_status"] = "BELOW PIVOT"
-            elif dist_pct <= 2.0:
-                result["entry_status"] = "FRESH"
-            elif dist_pct <= 5.0:
-                result["entry_status"] = "EXTENDED"
-            else:
-                result["entry_status"] = "STALE"
-        else:
-            if close > trigger * 1.01:
-                result["entry_status"] = "BELOW PIVOT" # or above, but we use BELOW PIVOT globally for rejected entries
-            elif dist_pct <= 2.0:
-                result["entry_status"] = "FRESH"
-            elif dist_pct <= 5.0:
-                result["entry_status"] = "EXTENDED"
-            else:
-                result["entry_status"] = "STALE"
-
-        # Fetch sector and market data for scoring
-        sector_perf = get_sector_data_cached()
-        nifty_regime = get_regime()
-
-        # Score calculations
-        score_res = calculate_score(result, sector_perf, nifty_regime)
-        result["score"] = score_res["total"]
-        result["confidence"] = score_res["grade"]
-        result["score_breakdown"] = score_res["breakdown"]
-
-        # Dynamic signal strength
-        if score_res["total"] >= 90:
-            result["signal_strength"] = "Institutional Strong"
-        elif score_res["total"] >= 80:
-            result["signal_strength"] = "Strong Momentum"
-        elif score_res["total"] >= 70:
-            result["signal_strength"] = "Moderate Setup"
-        else:
-            result["signal_strength"] = "Weak Signal"
-
-        # Map missing keys for scanner_momentum compatibility
-        result["close"] = result["price"]
-        result["camarilla_h4"] = result["cam"]["H4"]
-        result["camarilla_l3"] = result["cam"]["L3"]
-        result["camarilla_l4"] = result["cam"]["L4"]
-        
-        # Calculate correct Camarilla H5 & H6 breakout targets using 52-week range scaling
-        h5_val = (hv_high / hv_low) * close if hv_low > 0 else close * 1.05
-        h6_val = h5_val + 1.168 * (h5_val - result["cam"]["H4"])
-        result["camarilla_h5"] = round(h5_val, 2)
-        result["camarilla_h6"] = round(h6_val, 2)
-        result["rvol"] = result["vol_ratio"]
-        result["vol_mult"] = cfg.get("VOL_MULT", 1.8)
-        result["ema10_on"] = cfg["EMA_10"]
-        result["ema20_on"] = cfg["EMA_20"]
-        result["ema50_on"] = cfg["EMA_50"]
-        result["ema200_on"] = cfg["EMA_200"]
-
-        # Check strict buy/sell conditions
-        if not bearish:
-            ok, explanation = check_buy_signal(result, nifty_regime)
-            if not ok:
-                if explain_skip:
-                    return {
-                        "symbol": clean_sym,
-                        "skipped": True,
-                        "reason": f"Momentum failed — {explanation['failed'][0] if explanation['failed'] else 'Unknown'}"
-                    }
-                return None
-            result["signal_explanation"] = explanation
-        else:
-            ok, reason = check_sell_signal(result)
-            if not ok:
-                if explain_skip:
-                    return {
-                        "symbol": clean_sym,
-                        "skipped": True,
-                        "reason": f"Momentum failed — L4 not broken"
-                    }
-                return None
-            result["signal_explanation"] = {"passed": [reason], "failed": [], "entry": trigger, "sl": sl, "t1": result.get("target", trigger), "rr": result["rr"]}
-
-        # Check score limit
-        min_score = cfg["MIN_SCORE"]
-        try:
-            reg = get_regime().get("regime", "NEUTRAL")
-            if reg in ("BEAR", "STRONG_BEAR"):
-                min_score = max(0, min_score - 10)
-        except Exception:
-            pass
-
-        if result["score"] < min_score:
-            if explain_skip:
-                return {
-                    "symbol": clean_sym,
-                    "skipped": True,
-                    "reason": f"Momentum score too low ({result['score']}/100 < {min_score})"
-                }
-            return None
-
-        return result
-    except Exception as exc:
-        log.debug(f"{ticker}: unhandled error — {exc}")
-        if explain_skip:
-            return {
-                "symbol": ticker.replace(".NS", ""),
-                "skipped": True,
-                "reason": f"Unhandled exception during scan: {str(exc)}"
-            }
-        return None
-
+    import agent_engine
+    return agent_engine.analyse(
+        ticker=ticker,
+        bearish=bearish,
+        cfg_override=cfg_override,
+        explain_skip=explain_skip,
+        df=df,
+        market_context=market_context,
+        SKIP_TICKERS=SKIP_TICKERS,
+        CFG=CFG,
+        _download=_download,
+        get_nifty_returns=get_nifty_returns,
+        is_nse_market_open=is_nse_market_open,
+    )
 
 # ─────────────────────────────────────────────────────────────
 # SCAN ALL STOCKS  (concurrent via ThreadPoolExecutor)
@@ -1717,6 +987,7 @@ def run_scan(
     progress_cb: Optional[Callable] = None,
     cfg_override: Optional[Dict] = None,
     stop_event: Optional[threading.Event] = None,
+    market_context: Optional[Dict] = None,
 ) -> List[Dict]:
     """
     Scan tickers concurrently.
@@ -1786,7 +1057,14 @@ def run_scan(
 
     total   = len(tickers)
     results: List[Dict] = []
-    counter  = {"n": 0, "start": time.time(), "cache_hits": 0}
+    rejection_reasons = {
+        "turnover": 0, "price_floor": 0, "freshness": 0,
+        "data_sanity": 0, "rr_ratio": 0, "rs_gate": 0,
+        "rsi_gate": 0, "rsi_extreme": 0, "live_dump": 0, "ema_alignment": 0,
+        "volume_floor": 0, "extension": 0, "sector_lagging": 0,
+        "regime": 0, "score_floor": 0, "delisted": 0, "error": 0,
+    }
+    counter  = {"n": 0, "start": time.time(), "cache_hits": 0, "rejected": 0}
     lock     = threading.Lock()
     workers  = (cfg_override or {}).get("MAX_WORKERS", CFG["MAX_WORKERS"])
     stock_timeout = (cfg_override or {}).get("STOCK_TIMEOUT", CFG["STOCK_TIMEOUT"])
@@ -1834,7 +1112,7 @@ def run_scan(
 
         df = data_cache.get(ticker)
         is_hit = 0
-        if df is None and redis_client:
+        if df is None and redis_client and not is_post_market_invalidation_window():
             try:
                 cached = redis_client.get(f"stock:{ticker}")
                 if cached == "EMPTY":
@@ -1848,13 +1126,28 @@ def run_scan(
                 log.debug(f"Redis cache miss/error for {ticker}: {e}")
         
         if df is None or (not df.empty and len(df) < 260):
-            result = fetch_with_timeout(ticker, bearish=bearish, cfg_override=cfg_override, timeout=stock_timeout)
+            result = fetch_with_timeout(ticker, bearish=bearish, cfg_override=cfg_override, timeout=stock_timeout, market_context=market_context)
         elif df.empty:
             result = None
             is_hit = 1
         else:
             is_hit = 1
-            result = analyse(ticker, bearish=bearish, cfg_override=cfg_override, df=df)
+            result = analyse(ticker, bearish=bearish, cfg_override=cfg_override, df=df, market_context=market_context)
+
+        # Detect structured skip dicts from agent_engine
+        is_skip = isinstance(result, dict) and result.get("skipped") is True
+        if is_skip:
+            gate = result.get("skip_gate", "unknown")
+            reason = result.get("reason", "")
+            if gate == "error":
+                log.warning(f"[ENGINE ERROR] {ticker}: {reason}")
+            with lock:
+                if gate in rejection_reasons:
+                    rejection_reasons[gate] += 1
+                else:
+                    rejection_reasons[gate] = rejection_reasons.get(gate, 0) + 1
+                counter["rejected"] += 1
+            result = None
 
         if result:
             result["raw_score"] = result["score"]  # keep original raw score
@@ -1871,6 +1164,9 @@ def run_scan(
             if regime_name in ("BEAR", "STRONG_BEAR"):
                 min_score = max(0, min_score - 10)
             if result["raw_score"] < min_score:
+                with lock:
+                    rejection_reasons["score_floor"] = rejection_reasons.get("score_floor", 0) + 1
+                    counter["rejected"] += 1
                 result = None
 
         with lock:
@@ -1884,7 +1180,7 @@ def run_scan(
             eta     = int((elapsed / n) * (total - n)) if n > 0 else 0
 
         mode = "BEAR" if bearish else "BULL"
-        log.info(f"[{n}/{total}] {mode} {ticker} → {'✅ SIGNAL (' + result.get('confidence', '') + ')' if result else 'skip'}")
+        log.info(f"[{n}/{total}] {mode} {ticker} → {'✅ SIGNAL (' + str(result.get('confidence', '')) + ')' if result else 'skip'}")
 
         if progress_cb:
             try:
@@ -1963,10 +1259,75 @@ def run_scan(
              f"from {len(tickers)} stocks in "
              f"{elapsed/60:.1f} min ({elapsed:.0f}s)")
 
+    total_scanned = counter["n"]
+    total_rejected = counter["rejected"]
+    rejection_rate = round((total_rejected / total_scanned * 100), 1) if total_scanned > 0 else 0.0
+
+    scan_meta = {
+        "total_scanned"      : total_scanned,
+        "signals_found"      : len(results),
+        "rejected_count"     : total_rejected,
+        "rejection_rate_pct" : rejection_rate,
+        "rejection_reasons"  : {k: v for k, v in rejection_reasons.items() if v > 0},
+        "regime"             : regime_name,
+        "duration_s"         : round(elapsed, 1),
+    }
+
+    log.info(f"📋 scan_meta: {scan_meta}")
+
+    # Auto-log signals to trade journal
+    try:
+        from journal import add_trade, is_trade_logged
+        for s in results:
+            sym = s.get("symbol")
+            sig_date = datetime.now().strftime("%Y-%m-%d")
+            sig_type = s.get("signal_type", "Bull")
+            
+            # Check for duplicate entry on the same day for same symbol & type
+            if not is_trade_logged(sym, sig_date, sig_type):
+                entry_price = float(s.get("entry_trigger", 0.0))
+                ltp = float(s.get("ltp", 0.0))
+                try:
+                    from agent_engine import validate_journal_entry
+                    validate_journal_entry(entry_price, ltp, sym)
+                except AssertionError as ae:
+                    log.warning(f"⚠️ {ae}")
+                    continue
+
+                breakdown = s.get("score_breakdown", {})
+                notes = f"Auto-logged. Breakdown: Vol={breakdown.get('volume', 0)}, Mom={breakdown.get('momentum', 0)}, Fresh={breakdown.get('freshness', 0)}, RR={breakdown.get('rr', 0)}, Ext={breakdown.get('extension', 0)}, Sector={breakdown.get('sector_bonus', 0)}, HardCap={breakdown.get('hard_cap', False)}"
+                
+                trade_data = {
+                    "symbol": sym,
+                    "signal_date": sig_date,
+                    "signal_type": sig_type,
+                    "conf_grade": s.get("conf_grade", "A"),
+                    "raw_score": int(s.get("raw_score", 0)),
+                    "regime_score": int(s.get("regime_score", 0)),
+                    "regime": s.get("regime", "NEUTRAL"),
+                    "entry_price": entry_price,
+                    "stop_loss": float(s.get("stop_loss", 0.0)),
+                    "target_t1": float(s.get("target", 0.0)),
+                    "target_t2": float(s.get("target2")) if s.get("target2") is not None else None,
+                    "risk_pct": round(abs(entry_price - float(s.get("stop_loss", 0.0))) / entry_price * 100, 2) if entry_price else 0.0,
+                    "rr_ratio": float(s.get("rr_ratio", 0.0)),
+                    "notes": notes,
+                    "capital": 100000.0,
+                    "quantity": 0,
+                    "trade_value": 0.0,
+                    "risk_amount": 0.0,
+                    "actual_entry": entry_price,
+                }
+                add_trade(trade_data)
+                log.info(f"💾 Auto-logged signal {sym} ({sig_type}) to Trade Ledger.")
+    except Exception as journal_err:
+        log.warning(f"Failed to auto-log signals to trade journal: {journal_err}")
+
     return {
         "signals":     results,
         "regime":      regime_data,
         "duration":    elapsed,
+        "scan_meta":   scan_meta,
     }
 
 

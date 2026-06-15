@@ -279,6 +279,18 @@ def _do_scan(params: dict, scan_id: str) -> None:
             
         _update_state(**update_args)
 
+    # ─────────────────────────────────────────────────────────────
+    # NEW AGENT ORCHESTRATION LOGIC (Regime single source of truth)
+    # ─────────────────────────────────────────────────────────────
+    from agent_engine import get_market_context
+    try:
+        market_context = get_market_context(scan_mode=scan_mode)
+        sector_dict = _fetch_sector_rotation()
+        market_context["SECTOR_MOMENTUM"] = sector_dict
+    except Exception as e:
+        import logging
+        logging.getLogger("NSEScanner").error(f"Error fetching market context: {e}")
+
     try:
         all_signals = []
 
@@ -291,6 +303,7 @@ def _do_scan(params: dict, scan_id: str) -> None:
                 progress_cb=_progress,
                 cfg_override=cfg_override,
                 stop_event=_stop_event,
+                market_context=market_context,
             )
             if isinstance(bull_result, dict):
                 all_signals.extend(bull_result.get("signals", []))
@@ -308,6 +321,7 @@ def _do_scan(params: dict, scan_id: str) -> None:
                 progress_cb=_progress,
                 cfg_override=cfg_override,
                 stop_event=_stop_event,
+                market_context=market_context,
             )
             if isinstance(bear_result, dict):
                 all_signals.extend(bear_result.get("signals", []))
@@ -4608,16 +4622,21 @@ function render(isTick = false){
         <td style="text-align:center">${confBadge}</td>
         <td><span class="score" style="position:relative; display:inline-block;">${renderScoreBar(s.score, s.confidence || 'B')}
           <span class="score-tip">
-            <div class="tip-title">⚡ Score Breakdown</div>
+            <div class="tip-title">⚡ Agent Score Breakdown</div>
+            ${s.score_breakdown ? `
+            <div class="tip-row"><span style="color:#94a3b8">Volume</span><span style="color:#34d399;font-weight:800">+${s.score_breakdown.volume}/25</span></div>
+            <div class="tip-row"><span style="color:#94a3b8">Momentum</span><span style="color:#60a5fa;font-weight:800">+${s.score_breakdown.momentum}/20</span></div>
+            <div class="tip-row"><span style="color:#94a3b8">Freshness</span><span style="color:#f59e0b;font-weight:800">+${s.score_breakdown.freshness}/10</span></div>
+            <div class="tip-row"><span style="color:#94a3b8">Risk:Reward</span><span style="color:#c084fc;font-weight:800">+${s.score_breakdown.rr}/10</span></div>
+            ${s.score_breakdown.extension < 0 ? `<div class="tip-row"><span style="color:#f87171">Extension Penalty</span><span style="color:#ef4444;font-weight:800">${s.score_breakdown.extension}</span></div>` : ''}
+            ${s.score_breakdown.sector_bonus > 0 ? `<div class="tip-row"><span style="color:#fbbf24">Sector Bonus</span><span style="color:#f59e0b;font-weight:800">+${s.score_breakdown.sector_bonus}</span></div>` : ''}
+            ${s.score_breakdown.hard_cap ? `<div class="tip-row" style="color:#ef4444;font-size:8px;text-align:center;margin-top:4px">⚠️ HARD CAP APPLIED</div>` : ''}
+            ` : `
             <div class="tip-row"><span style="color:#94a3b8">Volume</span><span style="color:#34d399;font-weight:800">${Math.min(40,Math.round((s.vol_ratio||1)*10))}/40</span></div>
-            <div class="tip-row"><div class="tip-bar"><div class="tip-bar-fill" style="width:${Math.min(100,Math.round((s.vol_ratio||1)*10/40*100))}%;background:#34d399"></div></div></div>
             <div class="tip-row"><span style="color:#94a3b8">RSI Strength</span><span style="color:#60a5fa;font-weight:800">${Math.min(35,Math.max(0,Math.round((s.rsi||50)/100*35)))}/35</span></div>
-            <div class="tip-row"><div class="tip-bar"><div class="tip-bar-fill" style="width:${Math.min(100,Math.round((s.rsi||50)/100*100))}%;background:#60a5fa"></div></div></div>
             <div class="tip-row"><span style="color:#94a3b8">Momentum</span><span style="color:#f59e0b;font-weight:800">${Math.max(0,(s.score||0)-Math.min(40,Math.round((s.vol_ratio||1)*10))-Math.min(35,Math.max(0,Math.round((s.rsi||50)/100*35))))}/25</span></div>
+            `}
             <div style="border-top:1px solid var(--border-slate);margin-top:5px;padding-top:5px;display:flex;justify-content:space-between"><span style="color:#94a3b8">Total</span><span style="color:#c084fc;font-weight:800">${s.score||0}/100</span></div>
-            <div style="border-top:1px solid var(--border-slate);margin-top:6px;padding-top:6px;font-size:9.5px;font-weight:800;color:#fbbf24;text-align:center">
-              Base: ${baseScore} | Dist% penalty: ${penalty} | Final: ${finalScore}
-            </div>
           </span>
         </span></td>
         <td><div class="price-main">${renderPriceCell(s)}</div>${formatFreshness(s.scanned_time, s.scanned_timestamp, s.isMock)}</td>

@@ -317,3 +317,14 @@ def get_scorecard() -> Dict:
         "avg_win":       round(avg_win, 2),
         "avg_loss":      round(avg_loss, 2),
     }
+
+
+def is_trade_logged(symbol: str, signal_date: str, signal_type: str) -> bool:
+    """Check if a trade has already been logged for this symbol on this date and signal type."""
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM trade_journal WHERE symbol = ? AND signal_date = ? AND signal_type = ?",
+            (symbol, signal_date, signal_type)
+        ).fetchone()
+        return row is not None
+
