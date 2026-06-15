@@ -328,3 +328,86 @@ def is_trade_logged(symbol: str, signal_date: str, signal_type: str) -> bool:
         ).fetchone()
         return row is not None
 
+
+def update_open_trades():
+    """
+    Check all OPEN trades against their live LTP.
+    Auto-closes trades that have hit target_t1 or stop_loss.
+    """
+    from data_fetcher import get_stock_price
+    
+    open_trades = get_trades(outcome="OPEN")
+    if not open_trades:
+        return
+        
+    for t in open_trades:
+        sym = t["symbol"].strip().upper()
+        clean_sym = sym.replace(".NS", "")
+        try:
+            ltp, source = get_stock_price(clean_sym)
+            if not ltp or float(ltp) <= 0:
+                continue
+            ltp = round(float(ltp), 2)
+        except Exception:
+            continue
+            
+        sig_type = t.get("signal_type", "Bull")
+        entry_price = float(t.get("entry_price", 0.0))
+        stop_loss = float(t.get("stop_loss", 0.0))
+        target_t1 = float(t.get("target_t1", 0.0))
+        quantity = int(t.get("quantity") or 0)
+        
+        outcome = None
+        exit_price = None
+        achieved_rr = 0.0
+        
+        if sig_type == "Bull":
+            if ltp >= target_t1:
+                outcome = "WIN"
+                exit_price = target_t1
+                denom = entry_price - stop_loss
+                achieved_rr = round((target_t1 - entry_price) / denom, 2) if denom != 0 else 0.0
+            elif ltp <= stop_loss:
+                outcome = "LOSS"
+                exit_price = stop_loss
+                denom = entry_price - stop_loss
+                achieved_rr = round((stop_loss - entry_price) / denom, 2) if denom != 0 else -1.0
+        elif sig_type == "Bear":
+            if ltp <= target_t1:
+                outcome = "WIN"
+                exit_price = target_t1
+                denom = stop_loss - entry_price
+                achieved_rr = round((entry_price - target_t1) / denom, 2) if denom != 0 else 0.0
+            elif ltp >= stop_loss:
+                outcome = "LOSS"
+                exit_price = stop_loss
+                denom = stop_loss - entry_price
+                achieved_rr = round((entry_price - stop_loss) / denom, 2) if denom != 0 else -1.0
+                
+        if outcome and exit_price is not None:
+            pnl_points = round(exit_price - entry_price, 2)
+            pnl_pct    = round((pnl_points / entry_price) * 100, 2) if entry_price else 0.0
+            pnl_amount = round(pnl_points * quantity, 2)
+            
+            exit_date = datetime.now().strftime("%Y-%m-%d")
+            notes = (t.get("notes") or "") + f" | Auto-closed at {exit_price} ({outcome}) via update_open_trades"
+            
+            with get_conn() as conn:
+                conn.execute("""
+                    UPDATE trade_journal SET
+                        actual_exit   = ?,
+                        exit_date     = ?,
+                        exit_reason   = ?,
+                        pnl_points    = ?,
+                        pnl_pct       = ?,
+                        pnl_amount    = ?,
+                        rr_achieved   = ?,
+                        outcome       = ?,
+                        notes         = ?,
+                        updated_at    = datetime('now','localtime')
+                    WHERE id = ?
+                """, (exit_price, exit_date, "AUTO_CLOSE", pnl_points, pnl_pct, pnl_amount,
+                      achieved_rr, outcome, notes, t["id"]))
+            print(f"Auto-closed trade {sym} ({sig_type}) -> {outcome} at exit_price={exit_price}, achieved_rr={achieved_rr}")
+
+

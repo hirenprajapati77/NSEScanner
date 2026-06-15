@@ -199,6 +199,12 @@ def analyse(
         if rr_ratio < 1.5:
             return _skip("rr_ratio", f"R:R ratio < 1.5 ({rr_ratio:.2f})")
 
+        # Stop Distance Guard
+        stop_distance_pct = abs(entry_trigger - stop_loss) / entry_trigger * 100 if entry_trigger else 0.0
+        if stop_distance_pct < 0.5:
+            return _skip("stop_too_tight", f"Stop distance too tight: {stop_distance_pct:.2f}% < 0.5%")
+
+
         # 4. TREND & MOMENTUM GATES
         # Relative Strength
         stock_ret_50d = (close - df["close"].iloc[-50]) / df["close"].iloc[-50] * 100 if len(df) >= 50 else 0

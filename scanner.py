@@ -1063,6 +1063,7 @@ def run_scan(
         "rsi_gate": 0, "rsi_extreme": 0, "live_dump": 0, "ema_alignment": 0,
         "volume_floor": 0, "extension": 0, "sector_lagging": 0,
         "regime": 0, "score_floor": 0, "delisted": 0, "error": 0,
+        "stop_too_tight": 0,
     }
     counter  = {"n": 0, "start": time.time(), "cache_hits": 0, "rejected": 0}
     lock     = threading.Lock()
@@ -1322,6 +1323,14 @@ def run_scan(
                 log.info(f"💾 Auto-logged signal {sym} ({sig_type}) to Trade Ledger.")
     except Exception as journal_err:
         log.warning(f"Failed to auto-log signals to trade journal: {journal_err}")
+
+    # Auto-update open trades based on live prices
+    try:
+        from journal import update_open_trades
+        log.info("🔄 Running auto-close checks on OPEN trades...")
+        update_open_trades()
+    except Exception as journal_update_err:
+        log.warning(f"Failed to run auto-close check on open trades: {journal_update_err}")
 
     return {
         "signals":     results,
