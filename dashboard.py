@@ -2294,6 +2294,17 @@ tbody tr:hover td:first-child {
     <div class="sc-item"><span class="sc-lbl">Active Holdings</span><span class="sc-val" id="sc-open" style="color:var(--pro-watch)">—</span></div>
   </div>
 
+  <!-- Regime breakdown secondary bar -->
+  <div id="regimeScorecardBar" style="display:flex;align-items:center;
+    gap:20px;flex-wrap:wrap;padding:6px 20px;
+    background:var(--bg-inner);border-bottom:1px solid var(--border-slate);font-size:10.5px;color:var(--text-muted)">
+    <span style="color:var(--text-muted);font-weight:700;font-size:8.5px;letter-spacing:.06em;text-transform:uppercase">REGIME BREAKDOWN</span>
+    <span id="sc-regime-counts" style="font-family:var(--font-mono)">STRONG_BULL trades: —  |  NEUTRAL trades: —  |  BEAR trades: —</span>
+    <span style="color:var(--border-slate)">|</span>
+    <span id="sc-regime-winrates" style="font-family:var(--font-mono)">Win rate by regime: STRONG_BULL —% | NEUTRAL —% | BEAR —%</span>
+  </div>
+
+
   <!-- Strong Bear alert warning banner -->
   <div id="bearWarning" style="background:#1a0000;border-left:3px solid #f87171;
     padding:8px 20px;font-size:12px;color:#fca5a5;display:none;
@@ -5388,7 +5399,25 @@ function loadScorecard() {
     document.getElementById('sc-pnl').style.color = d.total_pnl >= 0 ? 'var(--pro-buy)' : 'var(--pro-sell)';
     document.getElementById('sc-open').textContent = d.open;
     document.getElementById('cnt-journal').textContent = (d.total || 0) + (d.open || 0);
+    
+    // Update regime statistics secondary bar
+    if (d.regime_stats) {
+      const sb = d.regime_stats.STRONG_BULL || {total: 0, win_rate: 0};
+      const n = d.regime_stats.NEUTRAL || {total: 0, win_rate: 0};
+      const b = d.regime_stats.BEAR || {total: 0, win_rate: 0};
+      
+      document.getElementById('sc-regime-counts').textContent = 
+        `STRONG_BULL trades: ${sb.total}  |  NEUTRAL trades: ${n.total}  |  BEAR trades: ${b.total}`;
+      
+      const sb_wr = sb.total > 0 ? sb.win_rate + '%' : '—%';
+      const n_wr = n.total > 0 ? n.win_rate + '%' : '—%';
+      const b_wr = b.total > 0 ? b.win_rate + '%' : '—%';
+      
+      document.getElementById('sc-regime-winrates').textContent = 
+        `Win rate by regime: STRONG_BULL ${sb_wr} | NEUTRAL ${n_wr} | BEAR ${b_wr}`;
+    }
   }).catch(() => {});
+
   
   fetch('/journal?outcome=OPEN')
     .then(r => r.json())

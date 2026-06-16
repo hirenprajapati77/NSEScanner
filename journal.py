@@ -265,17 +265,29 @@ def get_scorecard() -> Dict:
     """
     with get_conn() as conn:
         rows = conn.execute("""
-            SELECT outcome, pnl_amount, pnl_pct, rr_achieved, rr_ratio
+            SELECT outcome, pnl_amount, pnl_pct, rr_achieved, rr_ratio, regime
             FROM trade_journal
             WHERE outcome IN ('WIN','LOSS','EXPIRED')
         """).fetchall()
 
+    # Default empty structure for regime stats
+    regimes_data = {
+        "STRONG_BULL": {"total": 0, "wins": 0},
+        "NEUTRAL": {"total": 0, "wins": 0},
+        "BEAR": {"total": 0, "wins": 0}
+    }
+
     if not rows:
+        regime_stats = {
+            cat: {"total": 0, "wins": 0, "win_rate": 0.0}
+            for cat in regimes_data
+        }
         return {
             "total": 0, "wins": 0, "losses": 0,
             "win_rate": 0.0, "avg_rr": 0.0,
             "profit_factor": 0.0, "total_pnl": 0.0,
-            "expectancy": 0.0, "open": len(get_trades(outcome="OPEN"))
+            "expectancy": 0.0, "open": len(get_trades(outcome="OPEN")),
+            "regime_stats": regime_stats
         }
 
     total    = len(rows)
@@ -299,6 +311,31 @@ def get_scorecard() -> Dict:
         ((win_rate / 100.0) * avg_win) - ((1.0 - win_rate / 100.0) * avg_loss), 2
     )
 
+    # Calculate regime stats
+    for r in rows:
+        reg = (r["regime"] or "NEUTRAL").upper()
+        if "BULL" in reg:
+            category = "STRONG_BULL"
+        elif "BEAR" in reg:
+            category = "BEAR"
+        else:
+            category = "NEUTRAL"
+            
+        regimes_data[category]["total"] += 1
+        if r["outcome"] == "WIN":
+            regimes_data[category]["wins"] += 1
+
+    regime_stats = {}
+    for cat, data in regimes_data.items():
+        total_cat = data["total"]
+        wins_cat = data["wins"]
+        win_rate_cat = round((wins_cat / total_cat) * 100, 1) if total_cat else 0.0
+        regime_stats[cat] = {
+            "total": total_cat,
+            "wins": wins_cat,
+            "win_rate": win_rate_cat
+        }
+
     return {
         "total":         total,
         "wins":          wins,
@@ -313,7 +350,9 @@ def get_scorecard() -> Dict:
         "expectancy":    expectancy,
         "avg_win":       round(avg_win, 2),
         "avg_loss":      round(avg_loss, 2),
+        "regime_stats":  regime_stats
     }
+
 
 
 def is_trade_logged(symbol: str, entry_price: float, stop_loss: float) -> bool:
