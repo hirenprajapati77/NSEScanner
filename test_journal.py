@@ -169,10 +169,10 @@ def run_tests():
     # Total = 2
     # Wins = 1, Losses = 1
     # Win Rate = 50.0%
-    # Gross Profit = 2000.00, Gross Loss = 900.00, Net PnL = 1100.00
-    # Profit Factor = 2000.00 / 900.00 = 2.22
+    # Gross Profit (R) = 2.0, Gross Loss (R) = 1.0, Net PnL = 1100.00
+    # Profit Factor (R) = 2.0 / 1.0 = 2.0
     # Avg R:R realized: (2.0 + -1.0) / 2 = 0.50R
-    # Expectancy = (0.50 * 2000) - (0.50 * 900) = 1000 - 450 = 550.00
+    # Expectancy (R) = (0.50 * 2.0) - (0.50 * 1.0) = 1.0 - 0.5 = 0.50
     
     if scorecard["total"] != 2:
         print(f"[ERROR] Expected total 2, got {scorecard['total']}")
@@ -182,8 +182,8 @@ def run_tests():
         print(f"[ERROR] Expected win rate 50.0%, got {scorecard['win_rate']}%")
         sys.exit(1)
         
-    if scorecard["profit_factor"] != 2.22:
-        print(f"[ERROR] Expected profit factor 2.22, got {scorecard['profit_factor']}")
+    if scorecard["profit_factor"] != 2.0:
+        print(f"[ERROR] Expected profit factor 2.0, got {scorecard['profit_factor']}")
         sys.exit(1)
         
     if scorecard["total_pnl"] != 1100.0:
@@ -194,8 +194,8 @@ def run_tests():
         print(f"[ERROR] Expected avg R:R 0.50R, got {scorecard['avg_rr']}")
         sys.exit(1)
         
-    if scorecard["expectancy"] != 550.0:
-        print(f"[ERROR] Expected expectancy 550.00, got {scorecard['expectancy']}")
+    if scorecard["expectancy"] != 0.5:
+        print(f"[ERROR] Expected expectancy 0.50, got {scorecard['expectancy']}")
         sys.exit(1)
 
     print("[SUCCESS] Scorecard mathematical calculations verified perfectly.")

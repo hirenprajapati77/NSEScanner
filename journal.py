@@ -295,21 +295,22 @@ def get_scorecard() -> Dict:
     losses   = sum(1 for r in rows if r["outcome"] == "LOSS")
     win_rate = round((wins / total) * 100, 1) if total else 0.0
 
-    gross_profit = sum(r["pnl_amount"] for r in rows if r["pnl_amount"] > 0)
-    gross_loss   = abs(sum(r["pnl_amount"] for r in rows if r["pnl_amount"] < 0))
+    gross_profit = sum(r["rr_achieved"] for r in rows if r["outcome"] == "WIN" and r["rr_achieved"])
+    gross_loss   = abs(sum(r["rr_achieved"] for r in rows if r["outcome"] == "LOSS" and r["rr_achieved"]))
     total_pnl    = sum(r["pnl_amount"] for r in rows)
 
-    profit_factor = round(gross_profit / gross_loss, 2) if gross_loss else 0.0
+    profit_factor = round(gross_profit / gross_loss, 2) if gross_loss > 0 else None
     avg_rr = round(
         sum(r["rr_achieved"] for r in rows) / total, 2
     ) if total else 0.0
 
     # Expectancy = (Win% * Avg Win) - (Loss% * Avg Loss)
     avg_win  = gross_profit / wins   if wins   else 0.0
-    avg_loss = gross_loss   / losses if losses else 0.0
+    avg_loss = - (gross_loss / losses) if losses else 0.0
     expectancy = round(
-        ((win_rate / 100.0) * avg_win) - ((1.0 - win_rate / 100.0) * avg_loss), 2
+        ((win_rate / 100.0) * avg_win) - ((1.0 - win_rate / 100.0) * abs(avg_loss)), 2
     )
+
 
     # Calculate regime stats
     for r in rows:

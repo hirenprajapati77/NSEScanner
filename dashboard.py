@@ -5393,8 +5393,8 @@ function loadScorecard() {
     document.getElementById('sc-winrate').textContent = d.win_rate + '%';
     document.getElementById('sc-winrate').style.color = d.win_rate >= 55 ? 'var(--pro-buy)' : d.win_rate >= 40 ? 'var(--pro-watch)' : 'var(--pro-sell)';
     document.getElementById('sc-rr').textContent = d.avg_rr + 'R';
-    document.getElementById('sc-pf').textContent = d.profit_factor;
-    document.getElementById('sc-pf').style.color = d.profit_factor >= 1.5 ? 'var(--pro-buy)' : d.profit_factor >= 1 ? 'var(--pro-watch)' : 'var(--pro-sell)';
+    document.getElementById('sc-pf').textContent = d.profit_factor !== null ? d.profit_factor : '—';
+    document.getElementById('sc-pf').style.color = d.profit_factor !== null ? (d.profit_factor >= 1.5 ? 'var(--pro-buy)' : d.profit_factor >= 1 ? 'var(--pro-watch)' : 'var(--pro-sell)') : 'var(--text-muted)';
     document.getElementById('sc-pnl').textContent = (d.total_pnl >= 0 ? '+' : '') + '₹' + (d.total_pnl||0).toLocaleString('en-IN', {maximumFractionDigits:0});
     document.getElementById('sc-pnl').style.color = d.total_pnl >= 0 ? 'var(--pro-buy)' : 'var(--pro-sell)';
     document.getElementById('sc-open').textContent = d.open;
