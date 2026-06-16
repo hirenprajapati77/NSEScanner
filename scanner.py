@@ -1283,10 +1283,11 @@ def run_scan(
             sym = s.get("symbol")
             sig_date = datetime.now().strftime("%Y-%m-%d")
             sig_type = s.get("signal_type", "Bull")
+            entry_price = float(s.get("entry_trigger", 0.0))
+            stop_loss = float(s.get("stop_loss", 0.0))
             
-            # Check for duplicate entry on the same day for same symbol & type
-            if not is_trade_logged(sym, sig_date, sig_type):
-                entry_price = float(s.get("entry_trigger", 0.0))
+            # Check for duplicate entry on the same symbol with identical levels
+            if not is_trade_logged(sym, entry_price, stop_loss):
                 ltp = float(s.get("ltp", 0.0))
                 try:
                     from agent_engine import validate_journal_entry

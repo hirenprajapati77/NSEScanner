@@ -193,11 +193,8 @@ def close_trade(trade_id: int, data: Dict) -> Dict:
         pnl_pct    = round((pnl_points / actual_entry) * 100, 2) if actual_entry else 0.0
         pnl_amount = round(pnl_points * quantity, 2)
 
-        # Risk per share
-        if is_bull:
-            risk_per_share = actual_entry - row["stop_loss"]
-        else:
-            risk_per_share = row["stop_loss"] - actual_entry
+        # Risk per share (absolute distance to prevent sign inversion on tight/flipped stops)
+        risk_per_share = abs(actual_entry - row["stop_loss"])
 
         # Realized R:R achieved
         if risk_per_share and risk_per_share != 0:
@@ -319,12 +316,12 @@ def get_scorecard() -> Dict:
     }
 
 
-def is_trade_logged(symbol: str, signal_date: str, signal_type: str) -> bool:
-    """Check if a trade has already been logged for this symbol on this date and signal type."""
+def is_trade_logged(symbol: str, entry_price: float, stop_loss: float) -> bool:
+    """Check if a trade has already been logged for this symbol with identical entry and stop loss levels."""
     with get_conn() as conn:
         row = conn.execute(
-            "SELECT 1 FROM trade_journal WHERE symbol = ? AND signal_date = ? AND signal_type = ?",
-            (symbol, signal_date, signal_type)
+            "SELECT 1 FROM trade_journal WHERE symbol = ? AND abs(entry_price - ?) < 0.01 AND abs(stop_loss - ?) < 0.01",
+            (symbol, entry_price, stop_loss)
         ).fetchone()
         return row is not None
 
@@ -365,23 +362,23 @@ def update_open_trades():
             if ltp >= target_t1:
                 outcome = "WIN"
                 exit_price = target_t1
-                denom = entry_price - stop_loss
+                denom = abs(entry_price - stop_loss)
                 achieved_rr = round((target_t1 - entry_price) / denom, 2) if denom != 0 else 0.0
             elif ltp <= stop_loss:
                 outcome = "LOSS"
                 exit_price = stop_loss
-                denom = entry_price - stop_loss
+                denom = abs(entry_price - stop_loss)
                 achieved_rr = round((stop_loss - entry_price) / denom, 2) if denom != 0 else -1.0
         elif sig_type == "Bear":
             if ltp <= target_t1:
                 outcome = "WIN"
                 exit_price = target_t1
-                denom = stop_loss - entry_price
+                denom = abs(entry_price - stop_loss)
                 achieved_rr = round((entry_price - target_t1) / denom, 2) if denom != 0 else 0.0
             elif ltp >= stop_loss:
                 outcome = "LOSS"
                 exit_price = stop_loss
-                denom = stop_loss - entry_price
+                denom = abs(entry_price - stop_loss)
                 achieved_rr = round((entry_price - stop_loss) / denom, 2) if denom != 0 else -1.0
                 
         if outcome and exit_price is not None:
