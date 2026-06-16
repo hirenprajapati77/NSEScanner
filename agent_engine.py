@@ -425,11 +425,17 @@ def analyse(
         entry_status = "FRESH"
         if "EXTENDED" in flags: entry_status = "EXTENDED"
         
-        # H5/H6/L5/L6 mapping
-        h5_val = (high_52w / low_52w) * close if low_52w > 0 else close * 1.05
-        h6_val = h5_val + 1.168 * (h5_val - cam["H4"])
-        l5_val = (low_52w / high_52w) * close if high_52w > 0 else close * 0.95
-        l6_val = l5_val - 1.168 * (cam["L4"] - l5_val)
+        # H5/H6/L5/L6 mapping (Nick Scott Daily Range Variant)
+        daily_range = prev_high - prev_low
+        h5_val = round(prev_close + daily_range * 1.1 * 1.0, 2)
+        l5_val = round(prev_close - daily_range * 1.1 * 1.0, 2)
+        h6_val = round(h5_val + 1.168 * (h5_val - cam["H4"]), 2)
+        l6_val = round(l5_val - 1.168 * (cam["L4"] - l5_val), 2)
+
+        # Sanity check — H5 should be between H4 and 2x H4 distance from close
+        # If H5 > prev_close * 1.15, flag as WIDE_TARGET in flags[]
+        if h5_val > prev_close * 1.15:
+            flags.append("WIDE_TARGET")
 
         # Target T2 determination
         if setup_type == "H3_BREAKOUT":
