@@ -460,6 +460,8 @@ def analyse(
             
             # Legacy mapping for dashboard compatibility
             "price": close,
+            "change": round(intraday_chg_pct, 2),
+            "prevClose": round(prev_close, 2),
             "score": score,
             "confidence": score, # Changed to score for dashboard sorting
             "signal_strength": "Institutional Strong" if score >= 80 else "Moderate",
