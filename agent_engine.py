@@ -484,6 +484,8 @@ def analyse(
             "turnover_score": round(avg_daily_turnover_cr, 2),
             "sparkline": df["close"].iloc[-7:].tolist() if len(df) >= 7 else [],
             "rvol": round(vol_ratio_live, 2),
+            "risk_percentage": round(stop_distance_pct, 2),
+            "rr": round(rr_ratio, 2),
         }
 
     except Exception as exc:

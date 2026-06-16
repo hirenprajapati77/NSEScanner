@@ -4467,8 +4467,8 @@ function render(isTick = false){
     const targets1 = s.target ? s.target : pivots * 1.015;
     const targets2 = s.target2 ? s.target2 : pivots * 1.03;
     const stopLosses = s.stop_loss ? s.stop_loss : pivots * 0.985;
-    const riskVal = s.risk_percentage ? s.risk_percentage : 1.5;
-    const rrVal = s.rr ? s.rr : 2.0;
+    const riskVal = s.risk_percentage ? s.risk_percentage : (pivots && stopLosses ? Math.abs(pivots - stopLosses) / pivots * 100 : 1.5);
+    const rrVal = s.rr ? s.rr : (pivots && stopLosses && targets1 ? Math.abs(targets1 - pivots) / Math.abs(pivots - stopLosses) : 2.0);
 
     let rowHtml = "";
 
