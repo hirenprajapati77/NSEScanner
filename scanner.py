@@ -738,17 +738,17 @@ def _download(ticker: str, retries: int = 3, use_cache_only: bool = False) -> Op
                 pass
         return None
 
-    # Check cache validity — 12 hour TTL (except during post-market invalidation window 15:30–16:05 IST)
+    # Check cache validity — dynamic TTL (120s during market hours, 12hr otherwise)
     if not is_post_market_invalidation_window() and os.path.exists(cache_path):
         try:
             mtime = os.path.getmtime(cache_path)
-            _ttl = 43200   # 12 hours EOD cache TTL
+            _ttl = 120 if is_nse_market_open() else 43200   # 2 mins dynamic market TTL, 12 hours EOD cache TTL
             if time.time() - mtime < _ttl:
                 df = pd.read_csv(cache_path, index_col=0, parse_dates=True)
                 if df is not None and not df.empty:
                     df = normalize_dataframe(df)
                     if df is not None and not df.empty:
-                        log.debug(f"{ticker}: Loaded from local cache (TTL=12hr)")
+                        log.debug(f"{ticker}: Loaded from local cache (TTL={_ttl}s)")
                         return df
         except Exception:
             pass

@@ -425,9 +425,28 @@ def analyse(
         entry_status = "FRESH"
         if "EXTENDED" in flags: entry_status = "EXTENDED"
         
-        # H5/H6 mapping
+        # H5/H6/L5/L6 mapping
         h5_val = (high_52w / low_52w) * close if low_52w > 0 else close * 1.05
         h6_val = h5_val + 1.168 * (h5_val - cam["H4"])
+        l5_val = (low_52w / high_52w) * close if high_52w > 0 else close * 0.95
+        l6_val = l5_val - 1.168 * (cam["L4"] - l5_val)
+
+        # Target T2 determination
+        if setup_type == "H3_BREAKOUT":
+            target2 = h5_val
+        elif setup_type == "L3_BREAKDOWN":
+            target2 = l5_val
+        elif setup_type == "PIVOT_PLAY":
+            if not bearish:
+                target2 = cam["H4"]
+            else:
+                target2 = cam["L4"]
+        else:
+            target2 = target
+        target2 = round(target2, 2)
+
+        # Upside percentage calculation
+        upside_pct = abs(target - entry_trigger) / entry_trigger * 100 if entry_trigger else 0.0
 
         return {
             "symbol"         : ticker.replace(".NS", ""),
@@ -467,7 +486,7 @@ def analyse(
             "signal_strength": "Institutional Strong" if score >= 80 else "Moderate",
             "signal_type": "Bull" if not bearish else "Bear",
             "entry": entry_trigger,
-            "target2": target,
+            "target2": target2,
             "camarilla_h4": cam["H4"],
             "camarilla_l3": cam["L3"],
             "camarilla_l4": cam["L4"],
@@ -486,6 +505,10 @@ def analyse(
             "rvol": round(vol_ratio_live, 2),
             "risk_percentage": round(stop_distance_pct, 2),
             "rr": round(rr_ratio, 2),
+            "upside": round(upside_pct, 2),
+            "hv_high": round(high_52w, 2),
+            "hv_low": round(low_52w, 2),
+            "hv_date": hv_high_idx.strftime("%Y-%m-%d"),
         }
 
     except Exception as exc:
