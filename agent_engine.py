@@ -41,7 +41,10 @@ def analyse(
     scan_time = ctx.get("SCAN_TIME_IST", "15:30")
     vol_mode = ctx.get("VOLUME_RATIO_MODE", "1.0x_standard")
     scan_mode = ctx.get("SCAN_MODE", "bullish")
-    min_turnover_cr = float(cfg.get("MIN_TURNOVER_CR", 10.0))
+    if "TURNOVER_LIMIT" in cfg:
+        min_turnover_cr = float(cfg["TURNOVER_LIMIT"]) / 10000000.0
+    else:
+        min_turnover_cr = float(cfg.get("MIN_TURNOVER_CR", 10.0))
     price_cap = cfg.get("PRICE_CAP")
 
     # 0. REGIME GATE
@@ -110,8 +113,9 @@ def analyse(
         low_52w = float(df["low"].iloc[-252:].min()) if len(df) >= 252 else float(df["low"].min())
         
         hv_high_idx = df["high"].iloc[-252:].idxmax() if len(df) >= 252 else df["high"].idxmax()
+        max_52w_age = float(cfg.get("MAX_52W_AGE", 180.0))
         days_since_52w_high = int((datetime.now().date() - hv_high_idx.date()).days)
-        freshness_score = max(0.0, 1.0 - (days_since_52w_high / 180.0))
+        freshness_score = max(0.0, 1.0 - (days_since_52w_high / max_52w_age))
         if freshness_score == 0:
             return _skip("freshness", f"Stale momentum: {days_since_52w_high} days since 52W High")
 
@@ -168,12 +172,14 @@ def analyse(
             target = cam["H4"]
             stop_loss = max(cam["H2"], cam["L3"])
             if gap_pct > 2.0 and not bearish:
-                return _skip("rr_ratio", f"Gap up > 2.0%, setup ruined")
+                return _skip("gap", f"Gap up > 2.0%, setup ruined")
         elif prev_body_pct < -body_threshold:
             setup_type = "L3_BREAKDOWN"
             entry_trigger = cam["L3"]
             target = cam["L4"]
             stop_loss = min(cam["L2"], cam["H3"])
+            if gap_pct < -2.0 and bearish:
+                return _skip("gap", f"Gap down < -2.0%, setup ruined")
         else:
             setup_type = "PIVOT_PLAY"
             entry_trigger = pivot # Simplified for pivot play
@@ -191,6 +197,12 @@ def analyse(
             entry_trigger = pivot
             target = cam["H3"]
             stop_loss = cam["L1"]
+
+        # Stop-Loss Inversion Check
+        if not bearish and stop_loss >= entry_trigger:
+            return _skip("stop_loss_inversion", f"Stop-loss inversion: SL {stop_loss} >= Entry {entry_trigger}")
+        if bearish and stop_loss <= entry_trigger:
+            return _skip("stop_loss_inversion", f"Stop-loss inversion: SL {stop_loss} <= Entry {entry_trigger}")
 
         # R:R Ratio
         risk = abs(entry_trigger - stop_loss)
@@ -233,7 +245,7 @@ def analyse(
         rsi_14 = float(rsi_series.iloc[-1])
         if pd.isna(rsi_14): rsi_14 = 50.0
 
-        rsi_floor_map = {"STRONG_BULL": 40, "WEAK_BULL": 38, "SIDEWAYS": 35, "WEAK_BEAR": 32, "STRONG_BEAR": 28}
+        rsi_floor_map = {"STRONG_BULL": 40, "BULL": 38, "NEUTRAL": 35, "BEAR": 32, "STRONG_BEAR": 28}
         floor = rsi_floor_map.get(regime, 35)
         
         if not bearish and rsi_14 < floor:
@@ -258,11 +270,13 @@ def analyse(
         df["ema50"] = df["close"].ewm(span=50, adjust=False).mean()
         df["ema200"] = df["close"].ewm(span=200, adjust=False).mean()
         
-        if cfg.get("EMA_50", False):
-            if not bearish and close < df["ema50"].iloc[-1]:
-                return _skip("ema_alignment", f"LTP < EMA50")
-            if bearish and close > df["ema50"].iloc[-1]:
-                return _skip("ema_alignment", f"LTP > EMA50")
+        for ema_name, ema_col in [("EMA_10", "ema10"), ("EMA_20", "ema20"), ("EMA_50", "ema50"), ("EMA_200", "ema200")]:
+            if cfg.get(ema_name, False):
+                ema_val = df[ema_col].iloc[-1]
+                if not bearish and close < ema_val:
+                    return _skip("ema_alignment", f"LTP < {ema_name}")
+                if bearish and close > ema_val:
+                    return _skip("ema_alignment", f"LTP > {ema_name}")
 
         # 5. TIME-ADJUSTED VOLUME PROFILING
         vol_10d = df["volume"].iloc[-10:].median()
@@ -408,11 +422,6 @@ def analyse(
         
         score = score + vol_bonus + mom_bonus + fresh_bonus + rr_bonus + ext_penalty + sector_bonus
         
-        # HARD CAPS
-        if (not bearish and rsi_14 < 40) or (bearish and rsi_14 > 60):
-            score = min(score, 45)
-            score_breakdown["hard_cap"] = True
-            
         score = max(0, min(100, score))
         
         conf_grade = "REJECT"

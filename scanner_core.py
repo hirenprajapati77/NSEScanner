@@ -75,17 +75,33 @@ def fetch_single_stock(symbol):
             atr = ltp * 0.02
         atr_pct = (atr / ltp) * 100
         
-        # 52-week High/Low Range Camarilla pivots
+        # 52-week High/Low (still returned in output dict)
         hv_high = year_high if year_high and year_high > 0 else highs.max()
         hv_low = year_low if year_low and year_low > 0 else lows.min()
-        range_52w = hv_high - hv_low
-        if range_52w <= 0:
-            range_52w = ltp * 0.1
             
-        camarilla_h4 = ltp + range_52w * 1.1 / 2
-        camarilla_l3 = ltp - range_52w * 1.1 / 4
-        camarilla_l4 = ltp - range_52w * 1.1 / 2
-        camarilla_h5 = (hv_high / hv_low) * ltp if hv_low > 0 else ltp * 1.05
+        # Group hourly bars to get daily OHLC for Camarilla daily range math
+        df_daily = hist.groupby(hist.index.date).agg({
+            'High': 'max',
+            'Low': 'min',
+            'Close': 'last'
+        })
+        if len(df_daily) >= 2:
+            prev_high = float(df_daily['High'].iloc[-2])
+            prev_low = float(df_daily['Low'].iloc[-2])
+            prev_close_val = float(df_daily['Close'].iloc[-2])
+        else:
+            prev_high = highs.max()
+            prev_low = lows.min()
+            prev_close_val = prev_close if prev_close > 0 else ltp
+
+        daily_range = prev_high - prev_low
+        if daily_range <= 0:
+            daily_range = ltp * 0.02
+
+        camarilla_h4 = prev_close_val + daily_range * 1.1 / 2
+        camarilla_l3 = prev_close_val - daily_range * 1.1 / 4
+        camarilla_l4 = prev_close_val - daily_range * 1.1 / 2
+        camarilla_h5 = prev_close_val + daily_range * 1.1 * 1.0
         camarilla_h6 = camarilla_h5 + 1.168 * (camarilla_h5 - camarilla_h4)
         
         # Resolve sector mapping

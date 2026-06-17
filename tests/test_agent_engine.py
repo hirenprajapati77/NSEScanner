@@ -173,12 +173,60 @@ def test_sector_bonus_rank2_sector():
     sb = res["score_breakdown"]
     assert sb["sector_bonus"] == 3, f"Expected sector_bonus 3, got {sb['sector_bonus']}"
 
+def test_stop_loss_inversion():
+    """
+    Construct a PIVOT_PLAY setup with a small body close to high,
+    where L1 ends up above the pivot, creating a stop-loss inversion.
+    Assert that the setup is skipped with reason 'stop_loss_inversion'.
+    """
+    n = 66
+    dates = pd.date_range(end=datetime.now().date(), periods=n, freq='D')
+    opens = [100.0] * n
+    highs = [100.0] * n
+    lows = [100.0] * n
+    closes = [100.0] * n
+    
+    # Yesterday: close near high (100), low far below (90)
+    # This leads to pivot = 96.67, and L1 = 99.08 (SL > Entry)
+    closes[-2] = 100.0
+    opens[-2] = 99.9  # small body -> PIVOT_PLAY
+    highs[-2] = 100.0
+    lows[-2] = 90.0
+    
+    # Today
+    closes[-1] = 97.0
+    opens[-1] = 100.0
+    highs[-1] = 101.0
+    lows[-1] = 96.0
+    
+    df = pd.DataFrame({
+        "open": opens,
+        "high": highs,
+        "low": lows,
+        "close": closes,
+        "volume": [1000000.0] * n
+    }, index=dates)
+    
+    res = agent_engine.analyse(
+        ticker="HDFCBANK.NS",
+        bearish=False,
+        df=df,
+        market_context={"REGIME": "NEUTRAL", "SECTOR_MOMENTUM": {}},
+        is_nse_market_open=lambda: False,
+        cfg_override={"MIN_TURNOVER_CR": 0.0, "MIN_SCORE": 0}
+    )
+    
+    assert res.get("skipped") is True, "Expected analysis to be skipped"
+    assert res.get("skip_gate") == "stop_loss_inversion", f"Expected skip_gate stop_loss_inversion, got {res.get('skip_gate')}"
+    assert "Stop-loss inversion" in res.get("reason"), f"Expected stop loss inversion reason, got {res.get('reason')}"
+
 if __name__ == "__main__":
     tests = [
         ("test_macd_bearish_divergence_penalty", test_macd_bearish_divergence_penalty),
         ("test_macd_confirmed_crossover_bonus", test_macd_confirmed_crossover_bonus),
         ("test_sector_bonus_leading_sector", test_sector_bonus_leading_sector),
         ("test_sector_bonus_rank2_sector", test_sector_bonus_rank2_sector),
+        ("test_stop_loss_inversion", test_stop_loss_inversion),
     ]
     
     print("=== Running Agent Engine Logic Tests ===")

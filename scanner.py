@@ -1063,7 +1063,7 @@ def run_scan(
         "rsi_gate": 0, "rsi_extreme": 0, "live_dump": 0, "ema_alignment": 0,
         "volume_floor": 0, "extension": 0, "sector_lagging": 0,
         "regime": 0, "score_floor": 0, "delisted": 0, "error": 0,
-        "stop_too_tight": 0,
+        "stop_too_tight": 0, "gap": 0, "stop_loss_inversion": 0,
     }
     counter  = {"n": 0, "start": time.time(), "cache_hits": 0, "rejected": 0}
     lock     = threading.Lock()
