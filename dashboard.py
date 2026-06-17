@@ -2063,28 +2063,10 @@ tbody tr:hover td:first-child {
 }
 
   #mobileCardContainer {
-    display: none;
+    display: none !important;
   }
   @media(max-width:768px){
-    body:not(.desktop-force) .tbl-wrap {
-      display: none !important;
-    }
     body:not(.desktop-force) #mobileCardContainer {
-      display: flex !important;
-      flex-direction: column;
-      gap: 12px;
-      padding: 10px 8px;
-    }
-    body:not(.desktop-force)[data-active-tab="journal"] .tbl-wrap {
-      display: block !important;
-    }
-    body:not(.desktop-force)[data-active-tab="journal"] #mobileCardContainer {
-      display: none !important;
-    }
-    body:not(.desktop-force)[data-active-tab="home"] .tbl-wrap {
-      display: none !important;
-    }
-    body:not(.desktop-force)[data-active-tab="home"] #mobileCardContainer {
       display: none !important;
     }
     
