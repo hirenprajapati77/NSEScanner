@@ -14,6 +14,7 @@ Improvements in Phase 2:
 """
 
 import os
+import io
 import time
 import json
 import logging
@@ -885,7 +886,7 @@ def prefetch_batch(tickers: list, period="2y", progress_cb: Optional[Callable] =
                                         df = pd.DataFrame()
                                         use_cache = True
                                     else:
-                                        df = pd.read_json(data_val, orient='split')
+                                        df = pd.read_json(io.StringIO(data_val), orient='split')
                                         use_cache = True
                             
                             if use_cache and df is not None:
@@ -1160,7 +1161,7 @@ def run_scan(
                                 df = pd.DataFrame()
                                 use_cache = True
                             else:
-                                df = pd.read_json(data_val, orient='split')
+                                df = pd.read_json(io.StringIO(data_val), orient='split')
                                 use_cache = True
                     
                     if use_cache and df is not None and (df.empty or len(df) >= 260):
