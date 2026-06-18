@@ -867,12 +867,32 @@ def prefetch_batch(tickers: list, period="2y", progress_cb: Optional[Callable] =
                 for ticker in batch:
                     try:
                         cached = redis_client.get(f"stock:{ticker}")
-                        if cached == "EMPTY":
-                            local_cache[ticker] = pd.DataFrame()
-                        elif cached:
-                            df = pd.read_json(cached, orient='split')
-                            if len(df) >= 260:
-                                local_cache[ticker] = df
+                        if cached:
+                            try:
+                                cache_data = json.loads(cached)
+                            except Exception:
+                                cache_data = None
+                            
+                            use_cache = False
+                            df = None
+                            
+                            if isinstance(cache_data, dict) and "timestamp" in cache_data and "data" in cache_data:
+                                age = time.time() - cache_data["timestamp"]
+                                _ttl = 120 if is_nse_market_open() else 43200
+                                if age < _ttl:
+                                    data_val = cache_data["data"]
+                                    if data_val == "EMPTY":
+                                        df = pd.DataFrame()
+                                        use_cache = True
+                                    else:
+                                        df = pd.read_json(data_val, orient='split')
+                                        use_cache = True
+                            
+                            if use_cache and df is not None:
+                                if df.empty or len(df) >= 260:
+                                    local_cache[ticker] = df
+                                else:
+                                    missing_batch.append(ticker)
                             else:
                                 missing_batch.append(ticker)
                         else:
@@ -920,10 +940,18 @@ def prefetch_batch(tickers: list, period="2y", progress_cb: Optional[Callable] =
                 for ticker, df in local_cache.items():
                     try:
                         if df is not None and not df.empty:
-                            redis_client.setex(f"stock:{ticker}", 86400, df.to_json(date_format='iso', orient='split'))
+                            cache_payload = {
+                                "timestamp": time.time(),
+                                "data": df.to_json(date_format='iso', orient='split')
+                            }
+                            redis_client.setex(f"stock:{ticker}", 86400, json.dumps(cache_payload))
                         else:
                             # Cache an explicit empty marker so we don't try downloading dead stocks again
-                            redis_client.setex(f"stock:{ticker}", 86400, "EMPTY")
+                            cache_payload = {
+                                "timestamp": time.time(),
+                                "data": "EMPTY"
+                            }
+                            redis_client.setex(f"stock:{ticker}", 86400, json.dumps(cache_payload))
                     except Exception as e:
                         log.debug(f"Failed to cache {ticker} to Redis: {e}")
                             
@@ -1116,13 +1144,29 @@ def run_scan(
         if df is None and redis_client and not is_post_market_invalidation_window():
             try:
                 cached = redis_client.get(f"stock:{ticker}")
-                if cached == "EMPTY":
-                    df = pd.DataFrame() # empty frame
-                    is_hit = 1
-                elif cached:
-                    df = pd.read_json(cached, orient='split')
-                    if len(df) >= 260:
+                if cached:
+                    try:
+                        cache_data = json.loads(cached)
+                    except Exception:
+                        cache_data = None
+                    
+                    use_cache = False
+                    if isinstance(cache_data, dict) and "timestamp" in cache_data and "data" in cache_data:
+                        age = time.time() - cache_data["timestamp"]
+                        _ttl = 120 if is_nse_market_open() else 43200
+                        if age < _ttl:
+                            data_val = cache_data["data"]
+                            if data_val == "EMPTY":
+                                df = pd.DataFrame()
+                                use_cache = True
+                            else:
+                                df = pd.read_json(data_val, orient='split')
+                                use_cache = True
+                    
+                    if use_cache and df is not None and (df.empty or len(df) >= 260):
                         is_hit = 1
+                    else:
+                        df = None
             except Exception as e:
                 log.debug(f"Redis cache miss/error for {ticker}: {e}")
         
