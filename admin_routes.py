@@ -296,6 +296,10 @@ ADMIN_HTML = """
                 <span class="metric-label">Sector Cache Age</span>
                 <span class="metric-value" id="sector-cache-age">-- mins</span>
             </div>
+            <div class="metric-row">
+                <span class="metric-label">LTP Fetch Status (15m)</span>
+                <span class="metric-value" id="ltp-fetch-stats">--</span>
+            </div>
         </div>
 
         <!-- Recent Alerts Audit Trail -->
@@ -347,6 +351,11 @@ ADMIN_HTML = """
                     document.getElementById('total-trades').textContent = data.database.total_trades || '0';
                     document.getElementById('cache-size').textContent = data.cache.price_cache_size || '0';
                     document.getElementById('sector-cache-age').textContent = (data.cache.sector_cache_age_mins || 0).toFixed(1) + 'm';
+                    
+                    const succ = data.cache.live_fetch_success_15m || 0;
+                    const fail = data.cache.live_fetch_failure_15m || 0;
+                    document.getElementById('ltp-fetch-stats').innerHTML = 
+                        `<span style="color:var(--pro-green)">${succ} Ok</span> / <span style="color:var(--pro-red)">${fail} Fail</span>`;
 
                     // Table
                     const rows = data.recent_alerts.map(r => `
@@ -421,13 +430,19 @@ def admin_status():
     
     # Cache status
     sector_age = (time.time() - scanner_core._sector_cache_time) / 60 if scanner_core._sector_cache_time > 0 else 0.0
+    
+    from data_fetcher import get_fetch_stats
+    succ, fail = get_fetch_stats()
+    
     cache_status = {
         'price_cache_size': len(_price_cache),
         'sector_cache_age_mins': sector_age,
         'oldest_cache_entry': min(
             (time.time() - v['time'])/60 
             for v in _price_cache.values()
-        ) if _price_cache else 0.0
+        ) if _price_cache else 0.0,
+        'live_fetch_success_15m': succ,
+        'live_fetch_failure_15m': fail
     }
     
     # DB status

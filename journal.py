@@ -381,7 +381,7 @@ def update_open_trades():
         sym = t["symbol"].strip().upper()
         clean_sym = sym.replace(".NS", "")
         try:
-            ltp, source = get_stock_price(clean_sym)
+            ltp, source, status = get_stock_price(clean_sym)
             if not ltp or float(ltp) <= 0:
                 continue
             ltp = round(float(ltp), 2)

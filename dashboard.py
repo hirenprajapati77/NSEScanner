@@ -976,7 +976,7 @@ def get_watchlist_status_route():
         for row in rows:
             stock = dict(row)
             symbol = stock["symbol"]
-            ltp, _ = get_stock_price(symbol)
+            ltp, _, _ = get_stock_price(symbol)
             if not ltp:
                 ltp = stock["entry_price"] or 0.0
                 
@@ -1020,27 +1020,39 @@ def journal_get():
         # but get_trades already returns a list of dictionaries! So it is mutable.
         sym = str(t.get("symbol", "")).upper()
         
-        # Get live ltp
-        ltp, source = get_stock_price(sym)
-        if not ltp:
-            # Fallback to the scan cache price
-            state = _read_state()
-            signals_list = state.get("signals", [])
-            price_map = {str(s.get("symbol", "")).upper(): s.get("price") for s in signals_list if s.get("price")}
-            ltp = price_map.get(sym, t.get("entry_price", 0.0))
-            
-        t["current_ltp"] = ltp
-        
-        # Calculate live metrics
-        try:
-            metrics = get_trade_metrics(t, ltp)
-            t["mtm"] = metrics["mtm"]
-            t["days_held"] = metrics["days"]
-            t["status"] = metrics["status"]
-            t["status_color"] = metrics["status_color"]
-            t["current_rr"] = metrics["current_rr"]
-        except Exception:
-            pass
+        # Only fetch live price for OPEN trades
+        if t.get("outcome") == "OPEN":
+            ltp, source, status = get_stock_price(sym)
+            if status == "live":
+                t["current_ltp"] = ltp
+                t["ltp_status"] = "live"
+            elif status == "cached":
+                t["current_ltp"] = ltp
+                t["ltp_status"] = f"stale ({source})"
+            else:
+                t["current_ltp"] = None
+                t["ltp_status"] = "unavailable"
+        else:
+            t["current_ltp"] = t.get("exit_price")
+            t["ltp_status"] = "static"
+
+        ltp = t["current_ltp"]
+        if ltp is not None:
+            try:
+                metrics = get_trade_metrics(t, ltp)
+                t["mtm"] = metrics["mtm"]
+                t["days_held"] = metrics["days"]
+                t["status"] = metrics["status"]
+                t["status_color"] = metrics["status_color"]
+                t["current_rr"] = metrics["current_rr"]
+            except Exception:
+                pass
+        else:
+            t["mtm"] = 0.0
+            t["days_held"] = 0
+            t["status"] = "NO DATA"
+            t["status_color"] = "#6B7280"
+            t["current_rr"] = 0.0
 
     return jsonify({"trades": trades, "count": len(trades)})
 
@@ -1060,22 +1072,19 @@ def backtest_route():
 
 @app.route("/ltp_live")
 def ltp_live():
-    """Fetch live LTP for all open trades using yfinance fast_info — independent of scan."""
-    import yfinance as yf
+    """Fetch live LTP for all open trades using data_fetcher.get_stock_price — shared cache."""
+    from data_fetcher import get_stock_price
     from journal import get_trades
     open_trades = [t for t in get_trades(outcome="OPEN") if t.get("symbol")]
     result = {}
     for t in open_trades:
         sym = t["symbol"].strip().upper()
         try:
-            ticker_obj = yf.Ticker(sym + ".NS")
-            ltp = ticker_obj.fast_info.get("lastPrice") or \
-                  ticker_obj.fast_info.get("regularMarketPreviousClose") or \
-                  ticker_obj.fast_info.get("previousClose") or None
+            ltp, source, status = get_stock_price(sym)
             if ltp and float(ltp) > 0:
                 result[sym] = round(float(ltp), 2)
         except Exception:
-            result[sym] = None
+            pass
     return jsonify(result)
 
 
@@ -5468,7 +5477,11 @@ function renderJournal() {
           if (!ltp) return '<span style="color:var(--text-muted)">—</span>';
           const diff = ltp - (t.entry_price||0);
           const col = diff >= 0 ? 'var(--pro-buy)' : 'var(--pro-sell)';
-          return `<span style="color:${col}">₹${ltp.toLocaleString('en-IN',{minimumFractionDigits:2})}</span><br><span style="font-size:8.5px;color:${col}">${diff>=0?'+':''}${diff.toFixed(2)}</span>`;
+          let statusLabel = '';
+          if (t.ltp_status && t.ltp_status.startsWith('stale')) {
+              statusLabel = `<br><span style="font-size:8px;color:var(--text-muted)">${t.ltp_status}</span>`;
+          }
+          return `<span style="color:${col}">₹${ltp.toLocaleString('en-IN',{minimumFractionDigits:2})}</span><br><span style="font-size:8.5px;color:${col}">${diff>=0?'+':''}${diff.toFixed(2)}</span>${statusLabel}`;
         })()}</td>
         <td style="color:var(--pro-sell);font-family:var(--font-mono)">₹${(t.stop_loss||0).toLocaleString('en-IN')}</td>
         <td style="color:var(--pro-buy);font-family:var(--font-mono)">₹${(t.target_t1||0).toLocaleString('en-IN')}</td>
@@ -5559,10 +5572,14 @@ function fetchLiveLTP() {
         const entry = parseFloat(row.getAttribute('data-entry') || 0);
         const qty   = parseFloat(row.getAttribute('data-qty') || 0);
         const ltp   = ltpMap[sym] || ltpMap[(sym||'').toUpperCase()];
-        if (!ltp) return;
+        const cells = row.querySelectorAll('td');
+        if (!ltp) {
+          if (cells[5]) cells[5].innerHTML = '<span style="color:var(--text-muted)">—</span>';
+          if (cells[9]) cells[9].innerHTML = '<span style="color:var(--text-muted)">—</span>';
+          return;
+        }
         const diff = ltp - entry;
         const col  = diff >= 0 ? 'var(--pro-buy)' : 'var(--pro-sell)';
-        const cells = row.querySelectorAll('td');
         // 6th column = LTP Now (index 5)
         if (cells[5]) {
           cells[5].innerHTML =

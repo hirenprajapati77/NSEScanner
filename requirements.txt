@@ -8,7 +8,7 @@ gunicorn>=21.2.0              # Production WSGI server (used by Procfile)
 
 # ── Data & finance ────────────────────────────────────────
 pandas>=2.0.0,<3.0.0
-yfinance>=0.2.40              # Yahoo Finance data (keep updated — API changes often)
+yfinance>=0.2.54,<0.3.0              # Yahoo Finance data (keep updated — API changes often)
 numpy>=1.24.0,<2.0.0          # Required by pandas/yfinance
 
 # ── HTTP & networking ─────────────────────────────────────
