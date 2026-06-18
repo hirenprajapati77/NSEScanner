@@ -220,6 +220,33 @@ def test_stop_loss_inversion():
     assert res.get("skip_gate") == "stop_loss_inversion", f"Expected skip_gate stop_loss_inversion, got {res.get('skip_gate')}"
     assert "Stop-loss inversion" in res.get("reason"), f"Expected stop loss inversion reason, got {res.get('reason')}"
 
+def test_malformed_turnover_limit():
+    df = generate_mock_df([100.0] * 70, bullish=True, high_volume=True)
+    res = agent_engine.analyse(
+        ticker="RELIANCE.NS",
+        bearish=False,
+        df=df,
+        market_context={"REGIME": "NEUTRAL", "SECTOR_MOMENTUM": {}},
+        is_nse_market_open=lambda: False,
+        cfg_override={"TURNOVER_LIMIT": "", "MIN_SCORE": 0}
+    )
+    # Shouldn't raise ValueError, but gracefully handle it.
+    assert isinstance(res, dict)
+    
+def test_missing_regime_default():
+    df = generate_mock_df([100.0] * 70, bullish=False, high_volume=True)
+    res = agent_engine.analyse(
+        ticker="RELIANCE.NS",
+        bearish=False,
+        df=df,
+        market_context={}, # Missing REGIME
+        is_nse_market_open=lambda: False,
+        cfg_override={"MIN_SCORE": 0}
+    )
+    # Should default to NEUTRAL and not fail regime gate
+    assert res.get("skip_gate") != "regime", f"Expected not to fail regime gate, got {res.get('skip_gate')}"
+
+
 if __name__ == "__main__":
     tests = [
         ("test_macd_bearish_divergence_penalty", test_macd_bearish_divergence_penalty),
@@ -227,6 +254,8 @@ if __name__ == "__main__":
         ("test_sector_bonus_leading_sector", test_sector_bonus_leading_sector),
         ("test_sector_bonus_rank2_sector", test_sector_bonus_rank2_sector),
         ("test_stop_loss_inversion", test_stop_loss_inversion),
+        ("test_malformed_turnover_limit", test_malformed_turnover_limit),
+        ("test_missing_regime_default", test_missing_regime_default),
     ]
     
     print("=== Running Agent Engine Logic Tests ===")

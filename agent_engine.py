@@ -37,13 +37,16 @@ def analyse(
     nifty_ema50 = ctx.get("NIFTY_EMA50", 24000.0)
     nifty_prev_close = ctx.get("NIFTY_PREV_CLOSE", 25000.0)
     sector_dict = ctx.get("SECTOR_MOMENTUM", {})
-    regime = ctx.get("REGIME", "SIDEWAYS")
+    regime = ctx.get("REGIME", "NEUTRAL")
     scan_time = ctx.get("SCAN_TIME_IST", "15:30")
     vol_mode = ctx.get("VOLUME_RATIO_MODE", "1.0x_standard")
     scan_mode = ctx.get("SCAN_MODE", "bullish")
-    if "TURNOVER_LIMIT" in cfg:
-        min_turnover_cr = float(cfg["TURNOVER_LIMIT"]) / 10000000.0
-    else:
+    try:
+        if "TURNOVER_LIMIT" in cfg:
+            min_turnover_cr = float(cfg["TURNOVER_LIMIT"]) / 10000000.0
+        else:
+            min_turnover_cr = float(cfg.get("MIN_TURNOVER_CR", 10.0))
+    except (ValueError, TypeError):
         min_turnover_cr = float(cfg.get("MIN_TURNOVER_CR", 10.0))
     price_cap = cfg.get("PRICE_CAP")
 

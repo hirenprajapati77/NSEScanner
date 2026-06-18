@@ -61,7 +61,7 @@ L4  ← Hard stop (strong bear signal)
 ```
 
 Formulas:
-- Range = High − Low (52-week)
+- Range = High − Low (Prior Session)
 - H3 = Close + Range × 1.1 / 4
 - L3 = Close − Range × 1.1 / 4
 - H4 = Close + Range × 1.1 / 2
@@ -92,18 +92,20 @@ Formulas:
 
 ## Score System (0–100)
 
-| Condition              | Points |
-|------------------------|--------|
-| Base score             | 50     |
-| Above EMA 10/20/50/200 | +5 each|
-| Vol ≥ 3x avg           | +15    |
-| Vol ≥ 2x avg           | +10    |
-| Vol ≥ 1.5x avg         | +5     |
-| Bull candle            | +5     |
-| Price near HV low (<5%)| +5     |
-| Price far above (>20%) | −10    |
+| Condition                   | Points (Max) |
+|-----------------------------|--------------|
+| Base score                  | 30           |
+| Volume Bonus (≥3x/2x/1.5x/1x)| +25/18/10/5  |
+| Momentum Bonus (RSI/EMA/MACD)| +20          |
+| Freshness Bonus (≥0.8/0.5/0.2)| +10/7/3      |
+| R:R Ratio Bonus (≥3.0/2.0)  | +10/5        |
+| Sector Bonus (Rank 1-3/4-7) | +5/3         |
 
-Only stocks with score ≥ 55 are shown (configurable via `MIN_SCORE` in `.env`).
+### Grades
+- **A**: Score ≥ 80
+- **B**: Score ≥ 65
+- **C**: Score ≥ 50
+- **REJECT**: Score < 50
 
 ---
 

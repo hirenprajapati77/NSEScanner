@@ -1,3 +1,4 @@
+# DEPRECATED / UNUSED — not called by the live scan pipeline (see scanner.py::run_scan / agent_engine.py::analyse). Kept for reference only.
 # scanner_momentum.py — UPGRADE existing buy_condition()
 
 def check_buy_signal(stock_data, market_regime):

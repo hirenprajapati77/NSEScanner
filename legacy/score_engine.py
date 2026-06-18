@@ -1,3 +1,4 @@
+# DEPRECATED / UNUSED — not called by the live scan pipeline (see scanner.py::run_scan / agent_engine.py::analyse). Kept for reference only.
 # score_engine.py — UPGRADE existing score()
 
 SCORE_WEIGHTS = {
