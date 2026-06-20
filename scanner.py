@@ -705,6 +705,24 @@ def _get_cache_hit(ticker: str) -> int:
     return 0
 
 
+
+def fetch_tail(ticker: str) -> Optional[pd.DataFrame]:
+    """Download the last 5 days of data for tail merging."""
+    try:
+        with _YF_SEMAPHORE:
+            data = yf.download(
+                ticker, period="5d", interval="1d",
+                progress=False, auto_adjust=True,
+                timeout=15
+            )
+        if data is not None and not data.empty:
+            df = normalize_dataframe(data.copy())
+            if df is not None and not df.empty:
+                return df
+    except Exception as e:
+        log.debug(f"Failed to fetch tail for {ticker}: {e}")
+    return None
+
 def fetch_with_timeout(
     ticker: str,
     bearish: bool = False,
@@ -758,8 +776,8 @@ def prefetch_batch(tickers: list, period="2y", progress_cb: Optional[Callable] =
         try:
             local_cache = {}
             missing_batch = []
+            tail_refresh_batch = []
             
-            # Check Redis first (unless in post-market invalidation window)
             if redis_client and not is_post_market_invalidation_window():
                 for ticker in batch:
                     try:
@@ -770,26 +788,38 @@ def prefetch_batch(tickers: list, period="2y", progress_cb: Optional[Callable] =
                             except Exception:
                                 cache_data = None
                             
-                            use_cache = False
-                            df = None
-                            
                             if isinstance(cache_data, dict) and "timestamp" in cache_data and "data" in cache_data:
+                                last_full = cache_data.get("last_full_refresh", 0)
                                 age = time.time() - cache_data["timestamp"]
                                 _ttl = 120 if is_nse_market_open() else 43200
+                                
+                                if time.time() - last_full >= 86400:
+                                    missing_batch.append(ticker)
+                                    continue
+                                    
+                                data_val = cache_data["data"]
                                 if age < _ttl:
-                                    data_val = cache_data["data"]
                                     if data_val == "EMPTY":
                                         df = pd.DataFrame()
-                                        use_cache = True
+                                        local_cache[ticker] = (df, last_full)
                                     else:
                                         df = pd.read_json(io.StringIO(data_val), orient='split')
-                                        use_cache = True
-                            
-                            if use_cache and df is not None:
-                                if df.empty or len(df) >= 260:
-                                    local_cache[ticker] = df
+                                        if df is not None and (df.empty or len(df) >= 260):
+                                            local_cache[ticker] = (df, last_full)
+                                        else:
+                                            missing_batch.append(ticker)
                                 else:
-                                    missing_batch.append(ticker)
+                                    if data_val == "EMPTY":
+                                        missing_batch.append(ticker)
+                                    else:
+                                        try:
+                                            df = pd.read_json(io.StringIO(data_val), orient='split')
+                                            if df is not None and not df.empty and len(df) >= 260:
+                                                tail_refresh_batch.append((ticker, df, last_full))
+                                            else:
+                                                missing_batch.append(ticker)
+                                        except Exception:
+                                            missing_batch.append(ticker)
                             else:
                                 missing_batch.append(ticker)
                         else:
@@ -799,7 +829,6 @@ def prefetch_batch(tickers: list, period="2y", progress_cb: Optional[Callable] =
             else:
                 missing_batch = batch
                 
-            # Download missing
             if missing_batch:
                 with _YF_SEMAPHORE:
                     data = yf.download(
@@ -807,45 +836,74 @@ def prefetch_batch(tickers: list, period="2y", progress_cb: Optional[Callable] =
                         progress=False, auto_adjust=True,
                         group_by="ticker", threads=False
                     )
-            
                 for ticker in missing_batch:
                     try:
                         if isinstance(data.columns, pd.MultiIndex):
-                            # group_by='ticker' → levels[0] = tickers, levels[1] = OHLCV
                             all_tickers = list(data.columns.get_level_values(0).unique())
                             if ticker in all_tickers:
                                 df = data[ticker].copy()
                                 df.columns = [str(c).lower() for c in df.columns]
                                 df = df.dropna()
-                                local_cache[ticker] = df if not df.empty else None
+                                local_cache[ticker] = (df if not df.empty else None, time.time())
                             else:
-                                # Ticker not found — mark as missing, do not store wrong data
-                                local_cache[ticker] = None
+                                local_cache[ticker] = (None, time.time())
                         else:
-                            # Single-ticker non-MultiIndex download
                             if len(missing_batch) == 1 and ticker == missing_batch[0]:
                                 df = data.copy()
                                 df.columns = [str(c).lower() for c in df.columns]
                                 df = df.dropna()
-                                local_cache[ticker] = df if not df.empty else None
+                                local_cache[ticker] = (df if not df.empty else None, time.time())
                             else:
-                                local_cache[ticker] = None
+                                local_cache[ticker] = (None, time.time())
                     except Exception:
-                        local_cache[ticker] = None
+                        local_cache[ticker] = (None, time.time())
+
+            if tail_refresh_batch:
+                tail_tickers = [t[0] for t in tail_refresh_batch]
+                with _YF_SEMAPHORE:
+                    tail_data = yf.download(
+                        tail_tickers, period="5d", interval="1d",
+                        progress=False, auto_adjust=True,
+                        group_by="ticker", threads=False
+                    )
+                for ticker, old_df, last_full in tail_refresh_batch:
+                    new_df = None
+                    try:
+                        if isinstance(tail_data.columns, pd.MultiIndex):
+                            all_tickers = list(tail_data.columns.get_level_values(0).unique())
+                            if ticker in all_tickers:
+                                df = tail_data[ticker].copy()
+                                df.columns = [str(c).lower() for c in df.columns]
+                                new_df = df.dropna()
+                        else:
+                            if len(tail_refresh_batch) == 1 and ticker == tail_tickers[0]:
+                                df = tail_data.copy()
+                                df.columns = [str(c).lower() for c in df.columns]
+                                new_df = df.dropna()
+                    except Exception:
+                        pass
                     
+                    if new_df is not None and not new_df.empty:
+                        merged_df = pd.concat([old_df[~old_df.index.isin(new_df.index)], new_df]).sort_index()
+                        merged_df = merged_df.iloc[-505:]
+                        local_cache[ticker] = (merged_df, last_full)
+                    else:
+                        local_cache[ticker] = (old_df, last_full)
+
             if redis_client:
-                for ticker, df in local_cache.items():
+                for ticker, (df, last_full) in local_cache.items():
                     try:
                         if df is not None and not df.empty:
                             cache_payload = {
                                 "timestamp": time.time(),
+                                "last_full_refresh": last_full,
                                 "data": df.to_json(date_format='iso', orient='split')
                             }
                             redis_client.setex(f"stock:{ticker}", 86400, json.dumps(cache_payload))
                         else:
-                            # Cache an explicit empty marker so we don't try downloading dead stocks again
                             cache_payload = {
                                 "timestamp": time.time(),
+                                "last_full_refresh": last_full,
                                 "data": "EMPTY"
                             }
                             redis_client.setex(f"stock:{ticker}", 86400, json.dumps(cache_payload))
@@ -853,7 +911,8 @@ def prefetch_batch(tickers: list, period="2y", progress_cb: Optional[Callable] =
                         log.debug(f"Failed to cache {ticker} to Redis: {e}")
                             
             with cache_lock:
-                cache.update(local_cache)
+                for ticker, (df, last_full) in local_cache.items():
+                    cache[ticker] = df
                 
             with completed_lock:
                 completed_batches += 1
@@ -1047,23 +1106,46 @@ def run_scan(
                     except Exception:
                         cache_data = None
                     
-                    use_cache = False
                     if isinstance(cache_data, dict) and "timestamp" in cache_data and "data" in cache_data:
+                        last_full = cache_data.get("last_full_refresh", 0)
                         age = time.time() - cache_data["timestamp"]
                         _ttl = 120 if is_nse_market_open() else 43200
-                        if age < _ttl:
+                        
+                        if time.time() - last_full >= 86400:
+                            pass # Force full fetch
+                        elif age < _ttl:
                             data_val = cache_data["data"]
                             if data_val == "EMPTY":
                                 df = pd.DataFrame()
-                                use_cache = True
+                                is_hit = 1
                             else:
                                 df = pd.read_json(io.StringIO(data_val), orient='split')
-                                use_cache = True
-                    
-                    if use_cache and df is not None and (df.empty or len(df) >= 260):
-                        is_hit = 1
-                    else:
-                        df = None
+                                if df is not None and (df.empty or len(df) >= 260):
+                                    is_hit = 1
+                                else:
+                                    df = None
+                        else:
+                            data_val = cache_data["data"]
+                            if data_val != "EMPTY":
+                                try:
+                                    old_df = pd.read_json(io.StringIO(data_val), orient='split')
+                                    if old_df is not None and not old_df.empty and len(old_df) >= 260:
+                                        new_df = fetch_tail(ticker)
+                                        if new_df is not None and not new_df.empty:
+                                            merged_df = pd.concat([old_df[~old_df.index.isin(new_df.index)], new_df]).sort_index()
+                                            df = merged_df.iloc[-505:]
+                                            try:
+                                                cache_payload = {
+                                                    "timestamp": time.time(),
+                                                    "last_full_refresh": last_full,
+                                                    "data": df.to_json(date_format='iso', orient='split')
+                                                }
+                                                redis_client.setex(f"stock:{ticker}", 86400, json.dumps(cache_payload))
+                                            except Exception:
+                                                pass
+                                            is_hit = 1
+                                except Exception:
+                                    pass
             except Exception as e:
                 log.debug(f"Redis cache miss/error for {ticker}: {e}")
         
