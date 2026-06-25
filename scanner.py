@@ -265,6 +265,13 @@ def init_db() -> None:
                 memory_usage REAL
             )
         """)
+        # 4. Indexes for Performance
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_signal_date ON signal_history(date)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_signal_ticker ON signal_history(ticker)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_signal_date_ticker ON signal_history(date, ticker)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_alert_time ON alert_history(alert_time)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_alert_symbol ON alert_history(symbol)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_scan_timestamp ON scan_metrics(timestamp)")
         
         conn.commit()
         conn.close()
