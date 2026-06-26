@@ -2,7 +2,7 @@
 
 from datetime import datetime
 
-def get_watchlist_status(stock, entry_price, sl, target, current_ltp):
+def get_watchlist_status(stock, entry_price, sl, target, current_ltp, signal_type="Bull"):
     """
     TRIGGERED: LTP crossed entry level
     WAITING:   LTP not yet at entry
@@ -32,16 +32,23 @@ def get_watchlist_status(stock, entry_price, sl, target, current_ltp):
     elif signal_age_days > 5:
         status = 'EXPIRED'
         color = '#EF4444'
-    elif current_ltp >= entry_price:
+    elif (signal_type == "Bull" and current_ltp >= entry_price) or (signal_type == "Bear" and current_ltp <= entry_price and current_ltp > 0):
         status = 'TRIGGERED'
         color = '#10B981'
     else:
         status = 'WAITING'
         color = '#F59E0B'
     
-    risk = entry_price - sl
-    reward = target - entry_price
-    current_rr = (current_ltp - entry_price) / risk if risk > 0 else 0.0
+    if signal_type == "Bull":
+        risk = entry_price - sl
+        reward = target - entry_price
+        current_rr = (current_ltp - entry_price) / risk if risk > 0 else 0.0
+        dist = round((entry_price - current_ltp) / current_ltp * 100, 2) if current_ltp > 0 else 0.0
+    else:
+        risk = sl - entry_price
+        reward = entry_price - target
+        current_rr = (entry_price - current_ltp) / risk if risk > 0 else 0.0
+        dist = round((current_ltp - entry_price) / entry_price * 100, 2) if entry_price > 0 else 0.0
     
     return {
         'status': status,
@@ -51,5 +58,5 @@ def get_watchlist_status(stock, entry_price, sl, target, current_ltp):
         'target': target,
         'current_ltp': current_ltp,
         'current_rr': round(current_rr, 2),
-        'dist_to_entry': round((entry_price - current_ltp) / current_ltp * 100, 2) if current_ltp > 0 else 0.0
+        'dist_to_entry': dist
     }

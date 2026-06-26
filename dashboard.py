@@ -947,10 +947,11 @@ def update_watchlist():
                 sl = sig.get("stop_loss", entry * 0.985)
                 target = sig.get("target", entry * 1.03)
                 sector = sig.get("sector", "")
+                signal_type = sig.get("signal_type", "Bull")
                 conn.execute("""
-                    INSERT OR IGNORE INTO watchlist (symbol, entry_price, sl, target, sector)
-                    VALUES (?, ?, ?, ?, ?)
-                """, (sym, entry, sl, target, sector))
+                    INSERT OR IGNORE INTO watchlist (symbol, signal_type, entry_price, sl, target, sector)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                """, (sym, signal_type, entry, sl, target, sector))
         conn.commit()
         conn.close()
     except Exception as e:
@@ -976,11 +977,18 @@ def get_watchlist_status_route():
         for row in rows:
             stock = dict(row)
             symbol = stock["symbol"]
-            ltp, _, _ = get_stock_price(symbol)
-            if not ltp:
-                ltp = stock["entry_price"] or 0.0
+            signal_type = stock.get("signal_type", "Bull")
+            ltp, source, status = get_stock_price(symbol)
+            
+            if status == "live":
+                ltp_status = "live"
+            elif status == "cached":
+                ltp_status = f"stale ({source})"
+            else:
+                ltp = None
+                ltp_status = "unavailable"
                 
-            status_data = get_watchlist_status(stock, stock["entry_price"], stock["sl"], stock["target"], ltp)
+            status_data = get_watchlist_status(stock, stock["entry_price"], stock["sl"], stock["target"], ltp if ltp else 0.0, signal_type)
             results.append({
                 "symbol": symbol,
                 "sector": stock["sector"],
@@ -991,6 +999,7 @@ def get_watchlist_status_route():
                 "sl": status_data["sl"],
                 "target": status_data["target"],
                 "ltp": ltp,
+                "ltp_status": ltp_status,
                 "rr": status_data["current_rr"],
                 "dist": status_data["dist_to_entry"]
             })

@@ -1,3 +1,4 @@
+# DEPRECATED / UNUSED — not called by the live scan pipeline (see scanner.py::send_telegram / send_whatsapp). Kept for reference only.
 # alert_engine.py — UPGRADE existing send_alert()
 
 import time

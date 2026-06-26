@@ -95,6 +95,7 @@ def init_db():
         CREATE TABLE IF NOT EXISTS watchlist (
             id          INTEGER PRIMARY KEY AUTOINCREMENT,
             symbol      TEXT NOT NULL UNIQUE,
+            signal_type TEXT DEFAULT 'Bull',
             entry_price REAL,
             sl          REAL,
             target      REAL,
@@ -112,6 +113,7 @@ def init_db():
             "ALTER TABLE trade_journal ADD COLUMN days_held INTEGER DEFAULT 0",
             "ALTER TABLE trade_journal ADD COLUMN exit_price REAL",
             "ALTER TABLE trade_journal ADD COLUMN mtm REAL DEFAULT 0",
+            "ALTER TABLE watchlist ADD COLUMN signal_type TEXT DEFAULT 'Bull'",
         ]:
             try:
                 conn.execute(migration)
